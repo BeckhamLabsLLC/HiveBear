@@ -313,9 +313,8 @@ fn maybe_start_mesh(
         reputation_path,
     ));
 
-    let listen_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.mesh.port)
-        .parse()
-        .unwrap();
+    let listen_addr: std::net::SocketAddr =
+        format!("0.0.0.0:{}", config.mesh.port).parse().unwrap();
     let total_vram: u64 = hw.gpus.iter().map(|g| g.vram_bytes).sum();
 
     let local_info = hivebear_mesh::PeerInfo {

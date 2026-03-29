@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use hivebear_inference::{LoadConfig, Orchestrator};
 use hivebear_inference::types::{ModelHandle, OffloadConfig};
+use hivebear_inference::{LoadConfig, Orchestrator};
 use hivebear_mesh::protocol::MeshPipelineHandler;
 
 /// State for a loaded pipeline stage.

@@ -203,11 +203,8 @@ impl InferenceBackend for MeshBackend {
             info!("Mesh replication: routing to {} peer(s)", plan.peer_count());
 
             // Use full-model replication with trust verification
-            let mut initiator = PipelineInitiator::new(
-                transport.clone(),
-                plan,
-                node.local_id.clone(),
-            );
+            let mut initiator =
+                PipelineInitiator::new(transport.clone(), plan, node.local_id.clone());
 
             // Wire trust verification from the node's config
             let verifier = Arc::new(crate::trust::TrustVerifier::new(

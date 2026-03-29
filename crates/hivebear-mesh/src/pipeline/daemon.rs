@@ -124,11 +124,7 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                         let transport = self.transport.clone();
                         tokio::spawn(async move {
                             let result = ph
-                                .load_layers(
-                                    &model_source,
-                                    layer_range,
-                                    total_layers,
-                                )
+                                .load_layers(&model_source, layer_range, total_layers)
                                 .await;
                             let ack = MeshMessage::AssignLayersAck {
                                 session_id,
@@ -185,9 +181,7 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                                     let _ = transport.send(&peer_id, msg).await;
                                 }
                                 Err(e) => {
-                                    error!(
-                                        "MeshWorkerDaemon: forward_layers failed: {e}"
-                                    );
+                                    error!("MeshWorkerDaemon: forward_layers failed: {e}");
                                 }
                             }
                         });

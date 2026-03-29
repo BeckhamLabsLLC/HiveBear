@@ -8,9 +8,9 @@ use tracing::{debug, info, warn};
 
 use crate::config::MeshTier;
 use crate::discovery::PeerDiscovery;
-use crate::nat;
 use crate::error::Result;
 use crate::identity::NodeIdentity;
+use crate::nat;
 use crate::peer::{NodeId, PeerInfo, PeerState};
 use crate::transport::protocol::MeshMessage;
 use crate::transport::MeshTransport;
@@ -265,11 +265,8 @@ impl MeshNode {
     async fn connect_with_nat_traversal(&self, peer: &PeerInfo) -> Result<NodeId> {
         // Strategy 1: Direct connect (works on LAN or when no NAT)
         let direct_timeout = Duration::from_secs(3);
-        if let Ok(Ok(id)) = tokio::time::timeout(
-            direct_timeout,
-            self.transport.connect(peer.addr),
-        )
-        .await
+        if let Ok(Ok(id)) =
+            tokio::time::timeout(direct_timeout, self.transport.connect(peer.addr)).await
         {
             debug!("Direct connect succeeded to {}", peer.node_id);
             return Ok(id);
@@ -278,11 +275,8 @@ impl MeshNode {
         // Strategy 2: Try STUN-discovered external address
         if let Some(ext_addr) = peer.external_addr {
             debug!("Trying external address {} for {}", ext_addr, peer.node_id);
-            if let Ok(Ok(id)) = tokio::time::timeout(
-                direct_timeout,
-                self.transport.connect(ext_addr),
-            )
-            .await
+            if let Ok(Ok(id)) =
+                tokio::time::timeout(direct_timeout, self.transport.connect(ext_addr)).await
             {
                 debug!("External address connect succeeded to {}", peer.node_id);
                 return Ok(id);

@@ -86,8 +86,9 @@ impl Orchestrator {
             Err(local_err) => {
                 // If mesh is available, try it as a fallback
                 if self.has_mesh() {
-                    if let Some(mesh) =
-                        self.registry.get(hivebear_core::types::InferenceEngine::Mesh)
+                    if let Some(mesh) = self
+                        .registry
+                        .get(hivebear_core::types::InferenceEngine::Mesh)
                     {
                         tracing::info!(
                             "Local engine selection failed, falling back to mesh: {local_err}"
@@ -113,13 +114,11 @@ impl Orchestrator {
                 if backend.engine_id() != hivebear_core::types::InferenceEngine::Mesh
                     && self.has_mesh()
                 {
-                    if let Some(mesh) =
-                        self.registry.get(hivebear_core::types::InferenceEngine::Mesh)
+                    if let Some(mesh) = self
+                        .registry
+                        .get(hivebear_core::types::InferenceEngine::Mesh)
                     {
-                        tracing::info!(
-                            "Local load failed ({}), falling back to mesh",
-                            load_err
-                        );
+                        tracing::info!("Local load failed ({}), falling back to mesh", load_err);
                         let handle = mesh.load_model(path, config).await?;
                         self.track_loaded_model(&handle, path, mesh.engine_id(), config);
                         return Ok(handle);

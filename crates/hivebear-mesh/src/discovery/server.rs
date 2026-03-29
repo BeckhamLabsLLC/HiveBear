@@ -326,9 +326,10 @@ impl CoordinationServerClient {
 
         match self.http.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                let signals: Vec<serde_json::Value> = resp.json().await.map_err(|e| {
-                    MeshError::Discovery(format!("Failed to parse signals: {e}"))
-                })?;
+                let signals: Vec<serde_json::Value> = resp
+                    .json()
+                    .await
+                    .map_err(|e| MeshError::Discovery(format!("Failed to parse signals: {e}")))?;
                 Ok(signals)
             }
             Ok(_) => Ok(Vec::new()),
