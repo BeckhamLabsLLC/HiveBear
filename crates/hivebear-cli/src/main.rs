@@ -1,6 +1,7 @@
 mod account_commands;
 #[cfg(feature = "api")]
 mod api;
+mod pipeline_handler;
 mod registry_commands;
 
 use clap::{Parser, Subcommand};
@@ -270,6 +271,92 @@ enum ConfigAction {
     Reset,
 }
 
+/// Auto-start a background mesh node if mesh is enabled and auto_join is true.
+///
+/// Returns `Some(Arc<MeshNode>)` if the node was started (or is starting),
+/// `None` if mesh is disabled or the command doesn't benefit from it.
+fn maybe_start_mesh(
+    config: &hivebear_core::Config,
+    hw: &HardwareProfile,
+) -> Option<std::sync::Arc<hivebear_mesh::MeshNode>> {
+    use std::sync::Arc;
+
+    if !config.mesh.enabled || !config.mesh.auto_join {
+        return None;
+    }
+
+    let tier = hivebear_mesh::MeshTier::from_str_lossy(&config.mesh.tier);
+    let paths = hivebear_core::config::paths::AppPaths::new();
+    let identity_path = paths.data_dir.join("node_identity.key");
+    let identity = hivebear_mesh::NodeIdentity::load_or_generate(&identity_path)
+        .unwrap_or_else(|_| hivebear_mesh::NodeIdentity::generate());
+
+    let security_mode = hivebear_mesh::MeshSecurityMode::default();
+    let transport: Arc<dyn hivebear_mesh::MeshTransport> =
+        Arc::new(hivebear_mesh::transport::quic::QuicTransport::new(
+            identity.node_id.clone(),
+            security_mode,
+            None,
+        ));
+    let discovery: Arc<dyn hivebear_mesh::discovery::PeerDiscovery> = Arc::new(
+        hivebear_mesh::discovery::server::CoordinationServerClient::new(
+            config.mesh.coordination_server.clone(),
+        ),
+    );
+
+    let reputation_path = Some(paths.data_dir.join("reputation.json"));
+    let node = Arc::new(hivebear_mesh::MeshNode::with_identity(
+        identity,
+        transport,
+        discovery,
+        tier,
+        reputation_path,
+    ));
+
+    let listen_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.mesh.port)
+        .parse()
+        .unwrap();
+    let total_vram: u64 = hw.gpus.iter().map(|g| g.vram_bytes).sum();
+
+    let local_info = hivebear_mesh::PeerInfo {
+        node_id: node.local_id.clone(),
+        hardware: hw.clone(),
+        available_memory_bytes: hw.memory.available_bytes,
+        available_vram_bytes: total_vram,
+        network_bandwidth_mbps: 100.0,
+        latency_ms: None,
+        tier,
+        reputation_score: 1.0,
+        addr: listen_addr,
+        external_addr: None,
+        nat_type: hivebear_mesh::NatType::Unknown,
+        latency_map: std::collections::HashMap::new(),
+        serving_model_id: None,
+        swarm_id: None,
+        draft_capability: None,
+    };
+
+    // Start in background — never blocks the CLI
+    node.start_background(listen_addr, local_info);
+
+    Some(node)
+}
+
+/// Global mesh node reference, set during startup if auto-join is enabled.
+/// Accessed by command functions to register the mesh backend with their Orchestrator.
+static MESH_NODE: std::sync::OnceLock<std::sync::Arc<hivebear_mesh::MeshNode>> =
+    std::sync::OnceLock::new();
+
+/// Create an Orchestrator with mesh backend auto-registered if a mesh node is active.
+fn create_orchestrator(hw: HardwareProfile) -> Orchestrator {
+    let mut orchestrator = Orchestrator::new(hw);
+    if let Some(node) = MESH_NODE.get() {
+        let mesh_backend = hivebear_mesh::MeshBackend::new(std::sync::Arc::clone(node));
+        orchestrator.register_backend(Box::new(mesh_backend));
+    }
+    orchestrator
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -283,6 +370,23 @@ async fn main() {
         )
         .with_target(false)
         .init();
+
+    // Auto-start mesh for commands that benefit from it
+    let needs_mesh = matches!(
+        cli.command,
+        Commands::Run { .. }
+            | Commands::Mesh { .. }
+            | Commands::Contribute { .. }
+            | Commands::Quickstart { .. }
+    );
+
+    let config = hivebear_core::Config::load();
+    if needs_mesh {
+        let hw = hivebear_core::profile();
+        if let Some(node) = maybe_start_mesh(&config, &hw) {
+            let _ = MESH_NODE.set(node);
+        }
+    }
 
     match cli.command {
         Commands::Profile => cmd_profile(),
@@ -345,6 +449,11 @@ async fn main() {
             context_length,
         } => cmd_quickstart(temperature, context_length).await,
         Commands::Account { action } => account_commands::cmd_account(action).await,
+    }
+
+    // Graceful mesh shutdown
+    if let Some(node) = MESH_NODE.get() {
+        let _ = node.stop().await;
     }
 }
 
@@ -558,7 +667,7 @@ async fn cmd_benchmark(
 
         let hw = hivebear_core::profile();
         let model_path_str = registry_commands::resolve_model(&model_id, &hw).await;
-        let orchestrator = Orchestrator::new(hw);
+        let orchestrator = create_orchestrator(hw);
 
         let load_config = hivebear_inference::LoadConfig {
             context_length: 4096,
@@ -1225,7 +1334,7 @@ async fn cmd_quickstart(temperature: f32, context_length: u32) {
     sp.set_message(format!("{} Loading model...", "Step 4/4".bold().cyan()));
     sp.enable_steady_tick(std::time::Duration::from_millis(80));
 
-    let orchestrator = Orchestrator::new(hw.clone());
+    let orchestrator = create_orchestrator(hw.clone());
     let load_config = LoadConfig {
         context_length,
         offload: hivebear_inference::OffloadConfig {
@@ -1798,7 +1907,7 @@ async fn cmd_mesh_run(
     println!("{}", "Running locally (no mesh peers available).".yellow());
     println!();
 
-    let orchestrator = Orchestrator::new(hw.clone());
+    let orchestrator = create_orchestrator(hw.clone());
 
     let load_config = LoadConfig {
         context_length,
@@ -1831,7 +1940,7 @@ async fn cmd_mesh_run(
 
     // Build the inference handler (same one the daemon would use)
     let _handler = Arc::new(CliInferenceHandler {
-        orchestrator: Arc::new(Orchestrator::new(hw)),
+        orchestrator: Arc::new(create_orchestrator(hw)),
         handle: Arc::new(handle.clone()),
     });
 
@@ -2120,7 +2229,7 @@ async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator_u
         return;
     }
 
-    let orchestrator = std::sync::Arc::new(Orchestrator::new(hw.clone()));
+    let orchestrator = std::sync::Arc::new(create_orchestrator(hw.clone()));
     let load_config = LoadConfig {
         context_length: 4096,
         offload: hivebear_inference::OffloadConfig {
@@ -2158,8 +2267,17 @@ async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator_u
         return;
     }
 
-    // Start the worker daemon in a background task
-    let daemon = hivebear_mesh::pipeline::daemon::MeshWorkerDaemon::new(handler, transport.clone());
+    // Create pipeline handler for distributed layer serving
+    let pipeline_h = std::sync::Arc::new(pipeline_handler::CliPipelineHandler::new(
+        orchestrator.clone(),
+    ));
+
+    // Start the worker daemon with pipeline support
+    let daemon = hivebear_mesh::pipeline::daemon::MeshWorkerDaemon::with_pipeline(
+        handler,
+        transport.clone(),
+        pipeline_h,
+    );
     tokio::spawn(async move {
         daemon.run().await;
     });

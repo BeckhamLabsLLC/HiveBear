@@ -8,21 +8,42 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::peer::NodeId;
-use crate::protocol::MeshInferenceHandler;
+use crate::protocol::{MeshInferenceHandler, MeshPipelineHandler};
 use crate::transport::protocol::MeshMessage;
 use crate::transport::MeshTransport;
 
 /// A background daemon that listens on the mesh transport for incoming
 /// `InferenceRequest` messages, runs inference via the supplied handler,
 /// and streams tokens back to the requesting peer.
+///
+/// Optionally also handles pipeline-parallel messages (`AssignLayers`,
+/// `ActivationTensor`) when a `MeshPipelineHandler` is provided.
 pub struct MeshWorkerDaemon<H: MeshInferenceHandler> {
     handler: Arc<H>,
     transport: Arc<dyn MeshTransport>,
+    pipeline_handler: Option<Arc<dyn MeshPipelineHandler>>,
 }
 
 impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
     pub fn new(handler: Arc<H>, transport: Arc<dyn MeshTransport>) -> Self {
-        Self { handler, transport }
+        Self {
+            handler,
+            transport,
+            pipeline_handler: None,
+        }
+    }
+
+    /// Create a daemon with pipeline-parallel support.
+    pub fn with_pipeline(
+        handler: Arc<H>,
+        transport: Arc<dyn MeshTransport>,
+        pipeline_handler: Arc<dyn MeshPipelineHandler>,
+    ) -> Self {
+        Self {
+            handler,
+            transport,
+            pipeline_handler: Some(pipeline_handler),
+        }
     }
 
     /// Run the daemon loop. This will block (async) until the transport
@@ -76,9 +97,104 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                 }
                 MeshMessage::ReleaseSession { session_id } => {
                     info!("MeshWorkerDaemon: session {session_id} released by {peer_id}");
+                    // Also unload pipeline layers if any were loaded
+                    if let Some(ref ph) = self.pipeline_handler {
+                        let ph = ph.clone();
+                        tokio::spawn(async move {
+                            let _ = ph.unload_layers().await;
+                        });
+                    }
+                }
+                MeshMessage::AssignLayers {
+                    session_id,
+                    model_id: _,
+                    layer_range,
+                    total_layers,
+                    model_source,
+                    next_peer: _,
+                    initiator_peer: _,
+                } => {
+                    if let Some(ref ph) = self.pipeline_handler {
+                        info!(
+                            "MeshWorkerDaemon: layer assignment from {peer_id}: \
+                             layers {}..{} of {total_layers} (session {session_id})",
+                            layer_range.start, layer_range.end
+                        );
+                        let ph = ph.clone();
+                        let transport = self.transport.clone();
+                        tokio::spawn(async move {
+                            let result = ph
+                                .load_layers(
+                                    &model_source,
+                                    layer_range,
+                                    total_layers,
+                                )
+                                .await;
+                            let ack = MeshMessage::AssignLayersAck {
+                                session_id,
+                                ready: result.is_ok(),
+                                error: result.err(),
+                            };
+                            let _ = transport.send(&peer_id, ack).await;
+                        });
+                    } else {
+                        warn!(
+                            "MeshWorkerDaemon: received AssignLayers but no pipeline handler set"
+                        );
+                    }
+                }
+                MeshMessage::ActivationTensor {
+                    session_id,
+                    token_position,
+                    data,
+                    shape,
+                    dtype,
+                } => {
+                    if let Some(ref ph) = self.pipeline_handler {
+                        let ph = ph.clone();
+                        let transport = self.transport.clone();
+                        let dtype_u8 = match dtype {
+                            crate::transport::protocol::TensorDtype::F32 => 0u8,
+                            crate::transport::protocol::TensorDtype::F16 => 1u8,
+                            crate::transport::protocol::TensorDtype::BF16 => 2u8,
+                        };
+                        tokio::spawn(async move {
+                            match ph
+                                .forward_layers(
+                                    data.to_vec(),
+                                    shape.clone(),
+                                    dtype_u8,
+                                    token_position as usize,
+                                )
+                                .await
+                            {
+                                Ok((out_data, out_shape, out_dtype)) => {
+                                    let out_tensor_dtype = match out_dtype {
+                                        1 => crate::transport::protocol::TensorDtype::F16,
+                                        2 => crate::transport::protocol::TensorDtype::BF16,
+                                        _ => crate::transport::protocol::TensorDtype::F32,
+                                    };
+                                    // Send output back to the initiator (peer who sent it)
+                                    let msg = MeshMessage::ActivationTensor {
+                                        session_id,
+                                        token_position,
+                                        data: bytes::Bytes::from(out_data),
+                                        shape: out_shape,
+                                        dtype: out_tensor_dtype,
+                                    };
+                                    let _ = transport.send(&peer_id, msg).await;
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "MeshWorkerDaemon: forward_layers failed: {e}"
+                                    );
+                                }
+                            }
+                        });
+                    }
                 }
                 _ => {
-                    // Ignore messages we don't handle (Hello, ActivationTensor, etc.)
+                    // Ignore messages we don't handle (Hello, etc.)
                 }
             }
         }

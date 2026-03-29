@@ -232,7 +232,7 @@ impl Default for MobileConfig {
 impl Default for MeshConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             auto_join: true,
             port: 7878,
             coordination_server: "https://mesh.hivebear.dev".into(),

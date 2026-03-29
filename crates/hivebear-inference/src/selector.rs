@@ -92,6 +92,17 @@ pub fn select_engine<'a>(
         return Ok(backend);
     }
 
+    // Final fallback: mesh distributed inference (if registered and available)
+    if let Some(mesh) = registry.get(InferenceEngine::Mesh) {
+        if mesh.supported_formats().contains(&format) {
+            tracing::info!(
+                format = %format,
+                "No local engine available, routing to mesh"
+            );
+            return Ok(mesh);
+        }
+    }
+
     Err(InferenceError::NoEngineAvailable {
         format: format.to_string(),
     })

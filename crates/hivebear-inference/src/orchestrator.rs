@@ -18,6 +18,8 @@ pub struct Orchestrator {
     handle_backends: Arc<Mutex<HashMap<u64, hivebear_core::types::InferenceEngine>>>,
     /// Track loaded model info.
     model_info: Arc<Mutex<HashMap<u64, ModelInfo>>>,
+    /// Whether a mesh backend has been registered (enables auto-routing).
+    mesh_registered: std::sync::atomic::AtomicBool,
 }
 
 impl Orchestrator {
@@ -28,6 +30,7 @@ impl Orchestrator {
             profile,
             handle_backends: Arc::new(Mutex::new(HashMap::new())),
             model_info: Arc::new(Mutex::new(HashMap::new())),
+            mesh_registered: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -38,7 +41,26 @@ impl Orchestrator {
             profile,
             handle_backends: Arc::new(Mutex::new(HashMap::new())),
             model_info: Arc::new(Mutex::new(HashMap::new())),
+            mesh_registered: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Register an external inference backend (e.g., mesh distributed inference).
+    ///
+    /// This allows the mesh crate to add itself as a fallback engine without
+    /// creating circular dependencies.
+    pub fn register_backend(&mut self, backend: Box<dyn InferenceBackend>) {
+        if backend.engine_id() == hivebear_core::types::InferenceEngine::Mesh {
+            self.mesh_registered
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.registry.register(backend);
+    }
+
+    /// Whether a mesh backend is registered and available for auto-routing.
+    pub fn has_mesh(&self) -> bool {
+        self.mesh_registered
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get a reference to the engine registry.
@@ -52,30 +74,84 @@ impl Orchestrator {
     }
 
     /// Load a model, automatically selecting the best engine.
+    ///
+    /// Tries local engines first. If all local engines fail and a mesh backend
+    /// is registered, automatically falls back to distributed mesh inference.
     pub async fn load(&self, path: &Path, config: &LoadConfig) -> Result<ModelHandle> {
         let format = selector::detect_format(path)?;
-        let backend = selector::select_engine(&self.registry, format, &self.profile)?;
+        let local_result = selector::select_engine(&self.registry, format, &self.profile);
 
-        let handle = backend.load_model(path, config).await?;
+        let backend = match local_result {
+            Ok(b) => b,
+            Err(local_err) => {
+                // If mesh is available, try it as a fallback
+                if self.has_mesh() {
+                    if let Some(mesh) =
+                        self.registry.get(hivebear_core::types::InferenceEngine::Mesh)
+                    {
+                        tracing::info!(
+                            "Local engine selection failed, falling back to mesh: {local_err}"
+                        );
+                        mesh
+                    } else {
+                        return Err(local_err);
+                    }
+                } else {
+                    return Err(local_err);
+                }
+            }
+        };
 
-        // Track the mapping
+        match backend.load_model(path, config).await {
+            Ok(handle) => {
+                self.track_loaded_model(&handle, path, backend.engine_id(), config);
+                Ok(handle)
+            }
+            Err(load_err) => {
+                // If a local engine failed to load (e.g., out of memory),
+                // try the mesh backend as fallback
+                if backend.engine_id() != hivebear_core::types::InferenceEngine::Mesh
+                    && self.has_mesh()
+                {
+                    if let Some(mesh) =
+                        self.registry.get(hivebear_core::types::InferenceEngine::Mesh)
+                    {
+                        tracing::info!(
+                            "Local load failed ({}), falling back to mesh",
+                            load_err
+                        );
+                        let handle = mesh.load_model(path, config).await?;
+                        self.track_loaded_model(&handle, path, mesh.engine_id(), config);
+                        return Ok(handle);
+                    }
+                }
+                Err(load_err)
+            }
+        }
+    }
+
+    fn track_loaded_model(
+        &self,
+        handle: &ModelHandle,
+        path: &Path,
+        engine: hivebear_core::types::InferenceEngine,
+        config: &LoadConfig,
+    ) {
         self.handle_backends
             .lock()
             .expect("lock poisoned")
-            .insert(handle.id, backend.engine_id());
+            .insert(handle.id, engine);
 
         self.model_info.lock().expect("lock poisoned").insert(
             handle.id,
             ModelInfo {
                 handle_id: handle.id,
                 model_path: path.display().to_string(),
-                engine: backend.engine_id(),
+                engine,
                 context_length: config.context_length,
                 gpu_layers: config.offload.gpu_layers,
             },
         );
-
-        Ok(handle)
     }
 
     /// Load a cloud model by name (e.g., "openai/gpt-4o").

@@ -12,6 +12,7 @@ use crate::protocol::MeshPipelineHandler;
 use crate::scheduler::plan::InferencePlan;
 use crate::transport::protocol::MeshMessage;
 use crate::transport::MeshTransport;
+use crate::trust::{ReputationManager, TrustVerifier};
 use hivebear_inference::Token;
 
 /// How often to save activation checkpoints (every N tokens).
@@ -31,6 +32,10 @@ pub struct PipelineInitiator {
     plan: InferencePlan,
     local_id: NodeId,
     checkpoints: Arc<CheckpointStore>,
+    /// Optional trust verifier for probabilistic output verification.
+    verifier: Option<Arc<TrustVerifier>>,
+    /// Optional reputation manager for recording verification results.
+    reputation: Option<Arc<tokio::sync::Mutex<ReputationManager>>>,
 }
 
 impl PipelineInitiator {
@@ -40,7 +45,24 @@ impl PipelineInitiator {
             plan,
             local_id,
             checkpoints: Arc::new(CheckpointStore::new(20)),
+            verifier: None,
+            reputation: None,
         }
+    }
+
+    /// Attach trust verification to this initiator.
+    ///
+    /// When set, the initiator will probabilistically verify peer outputs
+    /// and update reputation scores. Peers that fall below the ban threshold
+    /// will be disconnected.
+    pub fn with_trust(
+        mut self,
+        verifier: Arc<TrustVerifier>,
+        reputation: Arc<tokio::sync::Mutex<ReputationManager>>,
+    ) -> Self {
+        self.verifier = Some(verifier);
+        self.reputation = Some(reputation);
+        self
     }
 
     /// Create an initiator with an existing checkpoint store (for shared recovery).
@@ -55,6 +77,8 @@ impl PipelineInitiator {
             plan,
             local_id,
             checkpoints,
+            verifier: None,
+            reputation: None,
         }
     }
 

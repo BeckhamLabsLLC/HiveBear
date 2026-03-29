@@ -281,6 +281,65 @@ impl CoordinationServerClient {
             .map_err(|e| MeshError::Discovery(format!("Failed to parse dashboard: {e}")))
     }
 
+    // ── Signal relay methods (NAT traversal coordination) ────────────
+
+    /// POST /signal — send a signaling message to another peer via the coordinator.
+    ///
+    /// Used for NAT traversal coordination: exchanging external addresses,
+    /// coordinating simultaneous QUIC handshakes for hole-punching, etc.
+    pub async fn send_signal(
+        &self,
+        from_node: &str,
+        to_node: &str,
+        signal_type: &str,
+        payload: &serde_json::Value,
+    ) -> Result<()> {
+        let url = format!("{}/signal", self.base_url);
+        let body = serde_json::json!({
+            "from_node": from_node,
+            "to_node": to_node,
+            "signal_type": signal_type,
+            "payload": payload,
+        });
+
+        match self.http.post(&url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => {
+                let status = resp.status();
+                debug!("Signal send returned {status}");
+                Ok(()) // Non-fatal — hole punch may still work
+            }
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                debug!("Signal relay unreachable (non-fatal): {e}");
+                Ok(())
+            }
+            Err(e) => Err(MeshError::Discovery(format!("Signal send failed: {e}"))),
+        }
+    }
+
+    /// GET /signals?node_id=... — retrieve pending signaling messages for this node.
+    ///
+    /// Returns signals from other peers (connection requests, NAT info exchange).
+    /// The coordinator clears retrieved signals automatically.
+    pub async fn poll_signals(&self, node_id: &str) -> Result<Vec<serde_json::Value>> {
+        let url = format!("{}/signals?node_id={}", self.base_url, node_id);
+
+        match self.http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let signals: Vec<serde_json::Value> = resp.json().await.map_err(|e| {
+                    MeshError::Discovery(format!("Failed to parse signals: {e}"))
+                })?;
+                Ok(signals)
+            }
+            Ok(_) => Ok(Vec::new()),
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                debug!("Signal poll failed (non-fatal): {e}");
+                Ok(Vec::new())
+            }
+            Err(e) => Err(MeshError::Discovery(format!("Signal poll failed: {e}"))),
+        }
+    }
+
     /// GET /me — node's own profile and contribution status.
     pub async fn get_me(&self) -> Result<serde_json::Value> {
         let url = format!("{}/me", self.base_url);

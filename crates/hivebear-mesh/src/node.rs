@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::MeshTier;
 use crate::discovery::PeerDiscovery;
+use crate::nat;
 use crate::error::Result;
 use crate::identity::NodeIdentity;
 use crate::peer::{NodeId, PeerInfo, PeerState};
@@ -26,6 +27,12 @@ pub struct MeshNode {
     pub peers: DashMap<Vec<u8>, (PeerInfo, PeerState)>,
     pub reputation: tokio::sync::Mutex<ReputationManager>,
     pub tier: MeshTier,
+    /// Our STUN-discovered external address (populated on start).
+    pub external_addr: tokio::sync::RwLock<Option<SocketAddr>>,
+    /// STUN servers for NAT detection.
+    pub stun_servers: Vec<String>,
+    /// Relay servers for symmetric NAT fallback.
+    pub relay_servers: Vec<String>,
     running: std::sync::atomic::AtomicBool,
     shutdown: Arc<Notify>,
 }
@@ -46,6 +53,9 @@ impl MeshNode {
             peers: DashMap::new(),
             reputation: tokio::sync::Mutex::new(ReputationManager::new(reputation_path)),
             tier,
+            external_addr: tokio::sync::RwLock::new(None),
+            stun_servers: vec!["stun.l.google.com:19302".into()],
+            relay_servers: vec!["relay.hivebear.dev:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
@@ -67,14 +77,34 @@ impl MeshNode {
             peers: DashMap::new(),
             reputation: tokio::sync::Mutex::new(ReputationManager::new(reputation_path)),
             tier,
+            external_addr: tokio::sync::RwLock::new(None),
+            stun_servers: vec!["stun.l.google.com:19302".into()],
+            relay_servers: vec!["relay.hivebear.dev:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
     }
 
     /// Start the mesh node: listen for connections and register with discovery.
-    pub async fn start(&self, listen_addr: SocketAddr, local_info: PeerInfo) -> Result<()> {
+    ///
+    /// Automatically discovers external address via STUN before registering,
+    /// so the coordinator knows how other peers can reach us.
+    pub async fn start(&self, listen_addr: SocketAddr, mut local_info: PeerInfo) -> Result<()> {
         info!("Starting mesh node {} on {}", self.local_id, listen_addr);
+
+        // Discover external address via STUN (non-blocking, best-effort)
+        if let Some(stun_server) = self.stun_servers.first() {
+            match nat::stun::discover_external_addr(stun_server).await {
+                Ok(ext_addr) => {
+                    info!("STUN discovered external address: {ext_addr}");
+                    *self.external_addr.write().await = Some(ext_addr);
+                    local_info.external_addr = Some(ext_addr);
+                }
+                Err(e) => {
+                    debug!("STUN discovery failed (non-fatal): {e}");
+                }
+            }
+        }
 
         self.transport.listen(listen_addr).await?;
         self.discovery.register(&local_info).await?;
@@ -166,6 +196,12 @@ impl MeshNode {
     }
 
     /// Discover new peers from the coordination server and connect to them.
+    ///
+    /// Uses a tiered connection strategy for NAT traversal:
+    /// 1. Direct connect to the peer's local address
+    /// 2. Try the peer's STUN-discovered external address
+    /// 3. Attempt hole-punch (simultaneous QUIC handshake)
+    /// 4. Fall back to relay server
     async fn discover_and_connect_peers(&self) {
         let peers = match self.discovery.find_peers("", 0).await {
             Ok(p) => p,
@@ -196,7 +232,7 @@ impl MeshNode {
                 }
             }
 
-            match self.transport.connect(peer_info.addr).await {
+            match self.connect_with_nat_traversal(&peer_info).await {
                 Ok(connected_id) => {
                     info!(
                         "Auto-connected to peer {} at {}",
@@ -207,8 +243,8 @@ impl MeshNode {
                 }
                 Err(e) => {
                     debug!(
-                        "Failed to connect to peer {} at {}: {e}",
-                        peer_info.node_id, peer_info.addr
+                        "All connection strategies failed for peer {}: {e}",
+                        peer_info.node_id
                     );
                 }
             }
@@ -217,6 +253,111 @@ impl MeshNode {
         if self.peer_count() > 0 {
             debug!("Connected to {} mesh peers", self.peer_count());
         }
+    }
+
+    /// Attempt to connect to a peer using a tiered NAT traversal strategy.
+    ///
+    /// Tries each method in order, falling through to the next on failure:
+    /// 1. Direct connection to advertised address
+    /// 2. Connection to STUN-discovered external address
+    /// 3. Hole-punch via simultaneous connect
+    /// 4. Relay server fallback
+    async fn connect_with_nat_traversal(&self, peer: &PeerInfo) -> Result<NodeId> {
+        // Strategy 1: Direct connect (works on LAN or when no NAT)
+        let direct_timeout = Duration::from_secs(3);
+        if let Ok(Ok(id)) = tokio::time::timeout(
+            direct_timeout,
+            self.transport.connect(peer.addr),
+        )
+        .await
+        {
+            debug!("Direct connect succeeded to {}", peer.node_id);
+            return Ok(id);
+        }
+
+        // Strategy 2: Try STUN-discovered external address
+        if let Some(ext_addr) = peer.external_addr {
+            debug!("Trying external address {} for {}", ext_addr, peer.node_id);
+            if let Ok(Ok(id)) = tokio::time::timeout(
+                direct_timeout,
+                self.transport.connect(ext_addr),
+            )
+            .await
+            {
+                debug!("External address connect succeeded to {}", peer.node_id);
+                return Ok(id);
+            }
+        }
+
+        // Strategy 3: Hole-punch — both sides send QUIC handshakes simultaneously
+        let our_ext = *self.external_addr.read().await;
+        if our_ext.is_some() || peer.external_addr.is_some() {
+            let target = peer.external_addr.unwrap_or(peer.addr);
+            debug!("Attempting hole-punch to {} at {}", peer.node_id, target);
+            match nat::holepunch::attempt_holepunch(
+                self.transport.as_ref(),
+                peer,
+                our_ext,
+                Duration::from_secs(5),
+            )
+            .await
+            {
+                Ok(()) => {
+                    // Hole punch succeeded — peer should be connected via transport
+                    if let Ok(id) = self.transport.connect(target).await {
+                        debug!("Hole-punch succeeded to {}", peer.node_id);
+                        return Ok(id);
+                    }
+                }
+                Err(e) => {
+                    debug!("Hole-punch failed for {}: {e}", peer.node_id);
+                }
+            }
+        }
+
+        // Strategy 4: Relay fallback
+        if !self.relay_servers.is_empty() {
+            let relay_client = nat::relay::RelayClient::new(self.relay_servers.clone());
+            if relay_client.is_available().await {
+                debug!("Requesting relay for {}", peer.node_id);
+                match relay_client.allocate_relay(peer).await {
+                    Ok(relay_addr) => {
+                        if let Ok(id) = self.transport.connect(relay_addr).await {
+                            info!("Connected to {} via relay at {}", peer.node_id, relay_addr);
+                            return Ok(id);
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Relay allocation failed for {}: {e}", peer.node_id);
+                    }
+                }
+            }
+        }
+
+        Err(crate::error::MeshError::Transport(format!(
+            "All connection strategies exhausted for peer {}",
+            peer.node_id
+        )))
+    }
+
+    /// Start the mesh node in the background without blocking the caller.
+    ///
+    /// Spawns a task that listens, registers with discovery, and starts
+    /// maintenance. Returns immediately so the CLI startup path is never
+    /// blocked by network issues. Errors are logged, not propagated.
+    pub fn start_background(self: &Arc<Self>, listen_addr: SocketAddr, local_info: PeerInfo) {
+        let node = Arc::clone(self);
+        tokio::spawn(async move {
+            match node.start(listen_addr, local_info).await {
+                Ok(()) => {
+                    node.start_maintenance();
+                    info!("Mesh node {} running in background", node.local_id);
+                }
+                Err(e) => {
+                    warn!("Background mesh start failed (non-fatal): {e}");
+                }
+            }
+        });
     }
 
     /// Stop the mesh node gracefully.
@@ -286,9 +427,10 @@ mod tests {
     use crate::transport::mock::{MockRegistry, MockTransport};
 
     fn make_node() -> MeshNode {
-        let (id, _) = NodeId::generate();
+        let (_id, _) = NodeId::generate();
         let registry = MockRegistry::new();
-        let transport = Arc::new(MockTransport::new(id, registry));
+        let (id2, _) = NodeId::generate();
+        let transport = Arc::new(MockTransport::new(id2, registry));
         let discovery = Arc::new(MockDiscovery::new());
 
         MeshNode::new(transport, discovery, MeshTier::Free, None)

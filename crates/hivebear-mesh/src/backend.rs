@@ -202,12 +202,24 @@ impl InferenceBackend for MeshBackend {
 
             info!("Mesh replication: routing to {} peer(s)", plan.peer_count());
 
-            // Use full-model replication
-            let initiator = Arc::new(PipelineInitiator::new(
-                transport,
+            // Use full-model replication with trust verification
+            let mut initiator = PipelineInitiator::new(
+                transport.clone(),
                 plan,
                 node.local_id.clone(),
+            );
+
+            // Wire trust verification from the node's config
+            let verifier = Arc::new(crate::trust::TrustVerifier::new(
+                transport.clone(),
+                0.1, // Default 10% verification rate
             ));
+            let reputation = Arc::new(tokio::sync::Mutex::new(
+                crate::trust::ReputationManager::new(None),
+            ));
+            initiator = initiator.with_trust(verifier, reputation);
+
+            let initiator = Arc::new(initiator);
             let mut token_rx = initiator.stream_tokens_replicated(
                 model_id,
                 messages_json,
