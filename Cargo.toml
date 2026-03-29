@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hivebear-core",
+    "crates/hivebear-inference",
+    "crates/hivebear-registry",
+    "crates/hivebear-mesh",
+    "crates/hivebear-persistence",
+    "crates/hivebear-cli",
+    "apps/desktop/src-tauri",
+    "web",
+]
+# web crate requires wasm32 target — only build via `wasm-pack build` in web/
+default-members = [
+    "crates/hivebear-core",
+    "crates/hivebear-inference",
+    "crates/hivebear-registry",
+    "crates/hivebear-mesh",
+    "crates/hivebear-persistence",
+    "crates/hivebear-cli",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/BeckhamLabsLLC/HiveBear"

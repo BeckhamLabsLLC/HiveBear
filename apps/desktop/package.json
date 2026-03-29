@@ -1,0 +1,38 @@
+{
+  "name": "hivebear-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^0.470",
+    "react": "^19",
+    "react-dom": "^19",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "jsdom": "^26",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vite": "^6",
+    "vitest": "^3"
+  }
+}

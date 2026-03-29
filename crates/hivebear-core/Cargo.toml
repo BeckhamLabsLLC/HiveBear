@@ -1,0 +1,46 @@
+[package]
+name = "hivebear-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core library for HiveBear: hardware profiling, model recommendations, and benchmarking"
+
+[features]
+default = ["keychain"]
+keychain = ["dep:keyring"]
+wasm = [
+    "dep:web-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:getrandom",
+]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+tracing = "0.1"
+
+# Native-only dependencies
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sysinfo = "0.33"
+directories = "6"
+wgpu = { version = "24", features = ["vulkan-portability"] }
+keyring = { version = "3", optional = true }
+
+# WASM-only dependencies
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", optional = true, features = [
+    "Navigator",
+    "Window",
+    "Performance",
+] }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+getrandom = { version = "0.2", optional = true, features = ["js"] }
+
+[dev-dependencies]
+pretty_assertions = "1"

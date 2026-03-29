@@ -1,0 +1,15 @@
+# Configuration for the `cross` tool (https://github.com/cross-rs/cross)
+# Used for cross-compiling to ARM targets (Raspberry Pi 5, etc.)
+
+[target.aarch64-unknown-linux-gnu]
+# Use the default cross image for aarch64
+# Includes gcc-aarch64-linux-gnu and QEMU for testing
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+[target.aarch64-unknown-linux-gnu.env]
+# Optimize for Cortex-A76 (Raspberry Pi 5)
+passthrough = ["CFLAGS=-march=armv8.2-a+dotprod"]
+
+[build]
+# Default members to build for ARM (skip desktop GUI and web crate)
+default-members-only = false

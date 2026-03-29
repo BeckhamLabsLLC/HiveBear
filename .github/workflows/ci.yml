@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Build (default features)
+        run: cargo build --verbose
+
+      - name: Run tests (default features)
+        run: cargo test --verbose
+
+      - name: Build inference with no default features
+        run: cargo build -p hivebear-inference --no-default-features --verbose
+
+      - name: Test inference with no default features
+        run: cargo test -p hivebear-inference --no-default-features --verbose
+
+      - name: Build registry
+        run: cargo build -p hivebear-registry --verbose
+
+      - name: Test registry
+        run: cargo test -p hivebear-registry --verbose
+
+      - name: Clippy
+        run: cargo clippy --workspace --exclude hivebear-web -- -D warnings
+
+  wasm:
+    name: WASM Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: wasm-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: wasm-cargo-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM crate
+        run: cd web && wasm-pack build --target web
+
+  arm-cross:
+    name: ARM Cross-Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross-compilation tools
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: arm-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: arm-cargo-
+
+      - name: Check core crates for aarch64
+        run: cargo check -p hivebear-core -p hivebear-inference --target aarch64-unknown-linux-gnu
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check advisories
+        run: cargo deny check advisories
+
+      - name: Check licenses
+        run: cargo deny check licenses
+
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Audit desktop dependencies
+        run: cd apps/desktop && npm ci && npm audit --audit-level=high

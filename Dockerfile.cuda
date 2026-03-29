@@ -1,0 +1,50 @@
+# HiveBear — NVIDIA CUDA Docker image
+# Usage: docker run -it --rm --gpus all -p 11434:11434 ghcr.io/beckhamlabsllc/hivebear:latest-cuda quickstart
+
+# --- Builder stage ---
+FROM nvidia/cuda:12.6.0-devel-ubuntu22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+COPY . .
+
+RUN cargo build --release -p hivebear-cli --features llamacpp-cuda \
+    && strip target/release/hivebear
+
+# --- Runtime stage ---
+FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/hivebear /usr/local/bin/hivebear
+
+# Default model storage inside container
+ENV HIVEBEAR_DATA_DIR=/data
+VOLUME /data
+
+# Create non-root user for security
+RUN groupadd -r hivebear && useradd -r -g hivebear -d /data -s /sbin/nologin hivebear \
+    && chown -R hivebear:hivebear /data
+
+USER hivebear
+
+EXPOSE 11434
+
+ENTRYPOINT ["hivebear"]
+CMD ["quickstart"]

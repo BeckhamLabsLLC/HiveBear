@@ -1,0 +1,41 @@
+name: Model Request
+description: Request support for a new model
+title: "[Model]: "
+labels: ["model-request"]
+body:
+  - type: input
+    id: model-name
+    attributes:
+      label: Model name
+      description: The name of the model you'd like HiveBear to support.
+      placeholder: e.g. Mistral 7B, Phi-3 Mini
+    validations:
+      required: true
+
+  - type: input
+    id: huggingface-url
+    attributes:
+      label: HuggingFace URL
+      description: Link to the model on HuggingFace, if available.
+      placeholder: https://huggingface.co/...
+    validations:
+      required: false
+
+  - type: textarea
+    id: why-this-model
+    attributes:
+      label: Why this model?
+      description: Explain why this model would be a good addition to HiveBear.
+      placeholder: Describe your use case and why this model is a good fit...
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware-profile
+    attributes:
+      label: Hardware you'd run it on
+      description: Paste the output of `hivebear profile` so we can understand your hardware constraints.
+      placeholder: Paste output of `hivebear profile` here...
+      render: text
+    validations:
+      required: false

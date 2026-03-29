@@ -1,0 +1,84 @@
+name: Bug Report
+description: Report a bug in HiveBear
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: Describe the bug...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Run `hivebear ...`
+        2. ...
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+      placeholder: Describe the expected behavior...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: What actually happened.
+      placeholder: Describe the actual behavior...
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware-profile
+    attributes:
+      label: Hardware profile
+      description: Paste the output of `hivebear profile` if relevant.
+      placeholder: Paste output of `hivebear profile` here...
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Which OS are you running?
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: HiveBear version
+      description: Run `hivebear --version` to find this.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any other context, logs, or screenshots.
+      placeholder: Add any other context about the problem here...
+    validations:
+      required: false

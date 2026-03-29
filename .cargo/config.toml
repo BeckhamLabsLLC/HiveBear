@@ -1,0 +1,14 @@
+# Cross-compilation configuration for HiveBear
+
+# WASM: enable getrandom JS backend (required by candle -> rand -> getrandom 0.3)
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
+
+# Raspberry Pi 5 and other ARM64 Linux devices
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+
+# ARM64 musl (static linking for portable binaries)
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]

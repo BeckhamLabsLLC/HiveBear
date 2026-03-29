@@ -1,0 +1,46 @@
+[package]
+name = "hivebear-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM bridge for HiveBear: browser-based LLM inference via WebGPU"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Workspace siblings
+hivebear-core = { path = "../crates/hivebear-core", features = ["wasm"] }
+hivebear-inference = { path = "../crates/hivebear-inference", default-features = false, features = ["wasm"] }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Navigator",
+    "Window",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+] }
+js-sys = "0.3"
+
+# Serialization bridge
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+
+# Error handling and logging
+console_error_panic_hook = "0.1"
+tracing = "0.1"
+
+# RNG — need all versions that transitive deps pull, with WASM features enabled
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+# Async
+futures = "0.3"

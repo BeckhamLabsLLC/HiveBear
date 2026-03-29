@@ -1,0 +1,60 @@
+[package]
+name = "hivebear-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "P2P distributed inference mesh for HiveBear"
+
+[dependencies]
+# Workspace siblings
+hivebear-core = { path = "../hivebear-core" }
+hivebear-inference = { path = "../hivebear-inference" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
+
+# Data plane (QUIC transport)
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# Crypto
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
+
+# HTTP client (for coordination server)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Error handling + logging
+thiserror = "2"
+tracing = "0.1"
+
+# Compression
+lz4_flex = "0.11"
+zstd = "0.13"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "6"
+bytes = { version = "1", features = ["serde"] }
+hex = "0.4"
+
+[features]
+default = []
+# Enable MeshSecurityMode::Insecure for development/testing only.
+# NEVER enable in release builds — disables all TLS certificate verification.
+insecure-dev = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+pretty_assertions = "1"
+tempfile = "3"

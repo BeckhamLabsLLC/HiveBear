@@ -1,0 +1,21 @@
+# Maintainer: BeckhamLabs <hello@beckhamlabs.com>
+pkgname=hivebear-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="AI that fits your machine — run LLMs on any device regardless of GPU"
+arch=('x86_64' 'aarch64')
+url="https://github.com/BeckhamLabsLLC/HiveBear"
+license=('MIT')
+provides=('hivebear')
+conflicts=('hivebear')
+
+source_x86_64=("${url}/releases/download/v${pkgver}/hivebear-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("${url}/releases/download/v${pkgver}/hivebear-aarch64-unknown-linux-gnu.tar.gz")
+
+sha256sums_x86_64=('PLACEHOLDER_X86_64_LINUX_SHA256')
+sha256sums_aarch64=('PLACEHOLDER_AARCH64_LINUX_SHA256')
+
+package() {
+    install -Dm755 hivebear "${pkgdir}/usr/bin/hivebear"
+    install -Dm644 /dev/null "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
