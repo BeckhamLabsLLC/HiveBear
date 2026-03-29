@@ -15,6 +15,7 @@
     "@tauri-apps/plugin-shell": "^2",
     "highlight.js": "^11.11.1",
     "lucide-react": "^0.470",
+    "motion": "^12.38.0",
     "react": "^19",
     "react-dom": "^19",
     "react-markdown": "^10.1.0",

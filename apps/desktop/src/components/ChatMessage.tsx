@@ -1,28 +1,40 @@
 import type { DisplayMessage } from "../hooks/useInference";
 import { User, Bot, Wrench } from "lucide-react";
 import MarkdownContent from "./MarkdownContent";
+import MessageActions from "./MessageActions";
+import StreamingIndicator, { StreamingCursor } from "./StreamingIndicator";
 
 interface ChatMessageProps {
   message: DisplayMessage;
+  streaming?: boolean;
+  modelName?: string;
+  onEdit?: () => void;
+  onRegenerate?: () => void;
 }
 
-export default function ChatMessage({ message }: ChatMessageProps) {
+export default function ChatMessage({
+  message,
+  streaming = false,
+  modelName,
+  onEdit,
+  onRegenerate,
+}: ChatMessageProps) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
+  const isAssistant = message.role === "assistant";
+  const isEmpty = message.content === "" && !message.toolCall;
 
   if (isTool) {
     return (
-      <div className="flex gap-3">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-400">
-          <Wrench size={14} />
+      <div className="group/msg flex items-start gap-3 rounded-[var(--radius-lg)] border border-warning/10 bg-warning/[0.03] px-4 py-3">
+        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-warning/10 text-warning">
+          <Wrench size={12} />
         </div>
-        <div className="max-w-[75%] rounded-2xl border border-amber-500/20 bg-amber-950/20 px-4 py-2.5 text-sm">
+        <div className="min-w-0 flex-1">
           {message.toolCallId && (
-            <span className="mb-1 block text-xs font-medium text-amber-400">
-              Tool Result
-            </span>
+            <span className="mb-1 block text-[11px] font-medium text-warning">Tool Result</span>
           )}
-          <pre className="whitespace-pre-wrap font-mono text-xs text-text-secondary">
+          <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-text-secondary">
             {message.content}
           </pre>
         </div>
@@ -31,18 +43,38 @@ export default function ChatMessage({ message }: ChatMessageProps) {
   }
 
   return (
-    <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
-      <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
-        isUser ? "bg-paw-500/20 text-paw-400" : "bg-surface-overlay text-text-muted"
-      }`}>
-        {isUser ? <User size={14} /> : <Bot size={14} />}
+    <div className="group/msg flex items-start gap-3">
+      {/* Avatar */}
+      <div
+        className={[
+          "flex h-6 w-6 shrink-0 items-center justify-center rounded-full mt-0.5",
+          isUser ? "bg-paw-500/15 text-paw-400" : "bg-surface-overlay text-text-muted",
+        ].join(" ")}
+      >
+        {isUser ? <User size={12} /> : <Bot size={12} />}
       </div>
-      <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-        isUser ? "bg-paw-500 text-white" : "bg-surface-raised text-text-primary"
-      }`}>
-        {message.role === "assistant" && message.toolCall ? (
-          <div>
-            <span className="mb-1 block text-xs font-medium text-paw-400">
+
+      {/* Content */}
+      <div className="min-w-0 flex-1">
+        {/* Role label + actions */}
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-text-muted">
+            {isUser ? "You" : modelName || "Assistant"}
+          </span>
+          {!isEmpty && !streaming && (
+            <MessageActions
+              content={message.content}
+              role={message.role}
+              onEdit={isUser ? onEdit : undefined}
+              onRegenerate={isAssistant ? onRegenerate : undefined}
+            />
+          )}
+        </div>
+
+        {/* Message body */}
+        {isAssistant && message.toolCall ? (
+          <div className="rounded-[var(--radius-md)] border border-paw-500/10 bg-paw-500/[0.03] px-3 py-2">
+            <span className="mb-1 block text-[11px] font-medium text-paw-400">
               Calling: {message.toolCall.name}
             </span>
             <pre className="whitespace-pre-wrap font-mono text-xs text-text-secondary">
@@ -56,12 +88,16 @@ export default function ChatMessage({ message }: ChatMessageProps) {
             </pre>
           </div>
         ) : isUser ? (
-          <p className="whitespace-pre-wrap">{message.content}</p>
+          <div className="text-sm leading-relaxed text-text-primary whitespace-pre-wrap">
+            {message.content}
+          </div>
+        ) : isEmpty && streaming ? (
+          <StreamingIndicator />
         ) : (
-          <MarkdownContent content={message.content} />
-        )}
-        {!isUser && message.content === "" && !message.toolCall && (
-          <span className="inline-block h-4 w-1 animate-pulse bg-text-muted" />
+          <div className="text-sm leading-relaxed text-text-primary">
+            <MarkdownContent content={message.content} />
+            {streaming && <StreamingCursor />}
+          </div>
         )}
       </div>
     </div>
