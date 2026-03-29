@@ -7,7 +7,7 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 
 [licenses]
-unlicensed = "deny"
+version = 2
 allow = [
     "MIT",
     "Apache-2.0",
@@ -21,7 +21,6 @@ allow = [
     "OpenSSL",
     "CC0-1.0",
 ]
-copyleft = "deny"
 
 [bans]
 multiple-versions = "warn"
