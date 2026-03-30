@@ -33,6 +33,8 @@ fn main() {
             commands::inference::unload_model,
             commands::inference::list_loaded_models,
             commands::benchmark::run_benchmark,
+            commands::benchmark::share_benchmark,
+            commands::benchmark::get_community_benchmarks,
             commands::config::get_config,
             commands::config::save_config,
             commands::mesh::get_mesh_status,

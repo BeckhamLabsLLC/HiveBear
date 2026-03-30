@@ -226,6 +226,12 @@ pub struct ModelRecommendation {
     pub confidence: f32,
     pub warnings: Vec<String>,
     pub score: f64,
+    /// Community-reported median tokens/sec from similar hardware (if available).
+    #[serde(default)]
+    pub community_tokens_per_sec: Option<f32>,
+    /// Number of community benchmark submissions backing the community estimate.
+    #[serde(default)]
+    pub community_sample_count: Option<u32>,
 }
 
 /// Profiling mode: estimate-only or with real benchmarks.
@@ -256,6 +262,40 @@ pub struct BenchmarkResult {
 
 fn default_benchmark_type() -> String {
     "synthetic".to_string()
+}
+
+/// Anonymized benchmark submission for community sharing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityBenchmarkSubmission {
+    pub hardware_fingerprint: crate::fingerprint::HardwareFingerprint,
+    pub model_id: String,
+    pub quantization: String,
+    pub engine: String,
+    pub context_length: u32,
+    pub benchmark_type: String,
+    pub tokens_per_sec: f32,
+    #[serde(default)]
+    pub time_to_first_token_ms: Option<u64>,
+    #[serde(default)]
+    pub prompt_eval_tokens_per_sec: Option<f32>,
+    pub peak_memory_bytes: u64,
+    pub client_version: String,
+}
+
+/// Aggregated community benchmark data for a model + hardware combination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityBenchmarkSummary {
+    pub model_id: String,
+    pub quantization: String,
+    pub engine: String,
+    pub sample_count: u32,
+    pub tokens_per_sec_p50: f32,
+    pub tokens_per_sec_p25: f32,
+    pub tokens_per_sec_p75: f32,
+    #[serde(default)]
+    pub ttft_ms_p50: Option<u64>,
+    pub peak_memory_mb_p50: u64,
+    pub hardware_similarity: f64,
 }
 
 /// Helper to format bytes into human-readable strings.

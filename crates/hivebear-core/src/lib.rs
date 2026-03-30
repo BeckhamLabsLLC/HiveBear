@@ -1,6 +1,7 @@
 pub mod benchmark;
 pub mod config;
 pub mod contribution;
+pub mod fingerprint;
 pub mod profiler;
 pub mod recommender;
 #[cfg(all(not(target_arch = "wasm32"), feature = "keychain"))]
@@ -11,11 +12,12 @@ pub mod types;
 #[cfg(not(target_arch = "wasm32"))]
 pub use config::paths::AppPaths;
 pub use config::Config;
+pub use fingerprint::{GpuClass, HardwareFingerprint};
 pub use profiler::profile;
 #[cfg(target_arch = "wasm32")]
 pub use profiler::profile_async;
 pub use recommender::model_db::ModelCategory;
 pub use types::{
-    BenchmarkResult, ComputeApi, HardwareProfile, InferenceEngine, ModelRecommendation,
-    Quantization,
+    BenchmarkResult, CommunityBenchmarkSubmission, CommunityBenchmarkSummary, ComputeApi,
+    HardwareProfile, InferenceEngine, ModelRecommendation, Quantization,
 };

@@ -44,6 +44,14 @@ enum Commands {
         /// Maximum number of recommendations
         #[arg(short, long)]
         top: Option<usize>,
+
+        /// Include community benchmark data from similar hardware
+        #[arg(short, long)]
+        community: bool,
+
+        /// Skip community data even if enabled in config
+        #[arg(long)]
+        local_only: bool,
     },
 
     /// Run inference benchmark
@@ -63,6 +71,14 @@ enum Commands {
         /// Number of benchmark iterations
         #[arg(long, default_value = "3")]
         iterations: u32,
+
+        /// Share benchmark results with the community (anonymized)
+        #[arg(long)]
+        share: bool,
+
+        /// Don't share results even if config enables it
+        #[arg(long)]
+        no_share: bool,
     },
 
     /// View or manage configuration
@@ -407,13 +423,20 @@ async fn main() {
 
     match cli.command {
         Commands::Profile => cmd_profile(),
-        Commands::Recommend { json, top } => cmd_recommend(json, top),
+        Commands::Recommend {
+            json,
+            top,
+            community,
+            local_only,
+        } => cmd_recommend(json, top, community, local_only).await,
         Commands::Benchmark {
             duration,
             model,
             generate_tokens,
             iterations,
-        } => cmd_benchmark(duration, model, generate_tokens, iterations).await,
+            share,
+            no_share,
+        } => cmd_benchmark(duration, model, generate_tokens, iterations, share, no_share).await,
         Commands::Config { action } => cmd_config(action),
         Commands::Run {
             model,
@@ -557,7 +580,91 @@ fn print_profile(hw: &HardwareProfile) {
     );
 }
 
-fn cmd_recommend(json: bool, top: Option<usize>) {
+/// Fetch community benchmark data from the coordination server for this hardware.
+async fn fetch_community_data(
+    config: &Config,
+    hw: &hivebear_core::HardwareProfile,
+) -> Vec<hivebear_core::CommunityBenchmarkSummary> {
+    let fp = hivebear_core::HardwareFingerprint::from_profile(hw);
+    let url = format!(
+        "{}/benchmarks?gpu_class={}&ram_gb_bucket={}&platform_arch={}",
+        config.mesh.coordination_server, fp.gpu_class, fp.ram_gb_bucket, fp.platform_arch
+    );
+
+    let client = reqwest::Client::new();
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            #[derive(serde::Deserialize)]
+            struct QueryResponse {
+                results: Vec<hivebear_core::CommunityBenchmarkSummary>,
+            }
+            match resp.json::<QueryResponse>().await {
+                Ok(data) => data.results,
+                Err(e) => {
+                    tracing::debug!("Failed to parse community data: {e}");
+                    vec![]
+                }
+            }
+        }
+        Ok(resp) => {
+            tracing::debug!("Community data fetch returned {}", resp.status());
+            vec![]
+        }
+        Err(e) => {
+            tracing::debug!("Failed to fetch community data: {e}");
+            vec![]
+        }
+    }
+}
+
+/// Share a benchmark result with the community (best-effort, never blocks).
+async fn share_benchmark_result(
+    config: &Config,
+    result: &hivebear_core::BenchmarkResult,
+    hw: &hivebear_core::HardwareProfile,
+    model_id: &str,
+    engine: &str,
+) {
+    let fp = hivebear_core::HardwareFingerprint::from_profile(hw);
+    let submission = hivebear_core::CommunityBenchmarkSubmission {
+        hardware_fingerprint: fp,
+        model_id: model_id.to_string(),
+        quantization: "auto".to_string(), // CLI doesn't currently expose quant info at benchmark time
+        engine: engine.to_string(),
+        context_length: 4096,
+        benchmark_type: result.benchmark_type.clone(),
+        tokens_per_sec: result.tokens_per_sec,
+        time_to_first_token_ms: Some(result.time_to_first_token_ms),
+        prompt_eval_tokens_per_sec: result.prompt_eval_tokens_per_sec,
+        peak_memory_bytes: result.peak_memory_bytes,
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+
+    let url = format!("{}/benchmarks", config.mesh.coordination_server);
+    let client = reqwest::Client::new();
+
+    let mut req = client.post(&url).json(&submission);
+    if let Some(ref token) = config.account.jwt_token {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            println!(
+                "  {}",
+                "Benchmark shared with community.".dimmed()
+            );
+        }
+        Ok(resp) => {
+            tracing::debug!("Benchmark share returned {}", resp.status());
+        }
+        Err(e) => {
+            tracing::debug!("Failed to share benchmark: {e}");
+        }
+    }
+}
+
+async fn cmd_recommend(json: bool, top: Option<usize>, community: bool, local_only: bool) {
     let hw = hivebear_core::profile();
     let mut config = Config::load();
 
@@ -565,7 +672,14 @@ fn cmd_recommend(json: bool, top: Option<usize>) {
         config.top_n_recommendations = n;
     }
 
-    let recs = hivebear_core::recommender::recommend(&hw, &config);
+    let use_community = (community || config.share_benchmarks) && !local_only;
+
+    let recs = if use_community {
+        let community_data = fetch_community_data(&config, &hw).await;
+        hivebear_core::recommender::recommend_with_community(&hw, &config, &community_data)
+    } else {
+        hivebear_core::recommender::recommend(&hw, &config)
+    };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&recs).unwrap());
@@ -610,22 +724,38 @@ fn cmd_recommend(json: bool, top: Option<usize>) {
     }
 
     println!();
-    print_recommendations(&recs);
+    let has_community = recs.iter().any(|r| r.community_tokens_per_sec.is_some());
+    print_recommendations(&recs, has_community);
 }
 
-fn print_recommendations(recs: &[ModelRecommendation]) {
+fn print_recommendations(recs: &[ModelRecommendation], show_community: bool) {
     // Table header
-    println!(
-        "  {:<4} {:<25} {:<10} {:<12} {:<10} {:<10} {:<6}",
-        "#".bold(),
-        "Model".bold(),
-        "Quant".bold(),
-        "Engine".bold(),
-        "Est. tok/s".bold(),
-        "Memory".bold(),
-        "Conf.".bold()
-    );
-    println!("  {}", "-".repeat(80));
+    if show_community {
+        println!(
+            "  {:<4} {:<25} {:<10} {:<12} {:<10} {:<12} {:<10} {:<6}",
+            "#".bold(),
+            "Model".bold(),
+            "Quant".bold(),
+            "Engine".bold(),
+            "Est. tok/s".bold(),
+            "Community".bold(),
+            "Memory".bold(),
+            "Conf.".bold()
+        );
+        println!("  {}", "-".repeat(92));
+    } else {
+        println!(
+            "  {:<4} {:<25} {:<10} {:<12} {:<10} {:<10} {:<6}",
+            "#".bold(),
+            "Model".bold(),
+            "Quant".bold(),
+            "Engine".bold(),
+            "Est. tok/s".bold(),
+            "Memory".bold(),
+            "Conf.".bold()
+        );
+        println!("  {}", "-".repeat(80));
+    }
 
     for (i, rec) in recs.iter().enumerate() {
         let rank = format!("{}", i + 1);
@@ -641,16 +771,34 @@ fn print_recommendations(recs: &[ModelRecommendation]) {
             tok_s.red()
         };
 
-        println!(
-            "  {:<4} {:<25} {:<10} {:<12} {:<10} {:<10} {:<6}",
-            rank,
-            rec.model_name,
-            rec.quantization.to_string(),
-            rec.engine.to_string(),
-            tok_s_colored,
-            memory,
-            confidence
-        );
+        if show_community {
+            let community_str = match (rec.community_tokens_per_sec, rec.community_sample_count) {
+                (Some(tok), Some(n)) => format!("{:.1} ({})", tok, n),
+                _ => "--".to_string(),
+            };
+            println!(
+                "  {:<4} {:<25} {:<10} {:<12} {:<10} {:<12} {:<10} {:<6}",
+                rank,
+                rec.model_name,
+                rec.quantization.to_string(),
+                rec.engine.to_string(),
+                tok_s_colored,
+                community_str,
+                memory,
+                confidence
+            );
+        } else {
+            println!(
+                "  {:<4} {:<25} {:<10} {:<12} {:<10} {:<10} {:<6}",
+                rank,
+                rec.model_name,
+                rec.quantization.to_string(),
+                rec.engine.to_string(),
+                tok_s_colored,
+                memory,
+                confidence
+            );
+        }
 
         // Print warnings indented
         for warning in &rec.warnings {
@@ -670,6 +818,8 @@ async fn cmd_benchmark(
     model: Option<String>,
     generate_tokens: u32,
     iterations: u32,
+    share: bool,
+    no_share: bool,
 ) {
     println!("\n{}", "  HiveBear Benchmark  ".bold().white().on_magenta());
     println!();
@@ -758,6 +908,27 @@ async fn cmd_benchmark(
                     println!(
                         "  Peak memory:      {}",
                         hivebear_core::types::format_bytes(result.peak_memory_bytes)
+                    );
+                }
+
+                // Community sharing
+                let config = Config::load();
+                let should_share = share || (config.share_benchmarks && !no_share);
+                if should_share && config.account.jwt_token.is_some() {
+                    let hw = hivebear_core::profile();
+                    share_benchmark_result(
+                        &config,
+                        &result,
+                        &hw,
+                        &model_id,
+                        &handle.engine.to_string(),
+                    )
+                    .await;
+                } else if !should_share && !config.share_benchmarks {
+                    println!(
+                        "  {}",
+                        "Tip: Set 'share_benchmarks = true' in config to help the community."
+                            .dimmed()
                     );
                 }
             }

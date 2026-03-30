@@ -122,6 +122,8 @@ pub fn recommend(
                 confidence,
                 warnings,
                 score,
+                community_tokens_per_sec: None,
+                community_sample_count: None,
             };
 
             // Keep the best quantization for this model (highest score)
