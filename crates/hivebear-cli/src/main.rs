@@ -2358,10 +2358,7 @@ async fn cmd_update(check_only: bool) {
 
     let current_version = env!("CARGO_PKG_VERSION");
 
-    println!(
-        "\n{}",
-        "  HiveBear Update  ".bold().white().on_blue()
-    );
+    println!("\n{}", "  HiveBear Update  ".bold().white().on_blue());
     println!();
     println!("Current version: {}", current_version.bold());
     println!("Checking for updates...");
@@ -2384,7 +2381,11 @@ async fn cmd_update(check_only: bool) {
     {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("{} Failed to check for updates: {}", "Error:".red().bold(), e);
+            eprintln!(
+                "{} Failed to check for updates: {}",
+                "Error:".red().bold(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -2392,7 +2393,11 @@ async fn cmd_update(check_only: bool) {
     let latest = match updater.get_latest_release() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{} Failed to fetch latest release: {}", "Error:".red().bold(), e);
+            eprintln!(
+                "{} Failed to fetch latest release: {}",
+                "Error:".red().bold(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -2439,10 +2444,7 @@ async fn cmd_update(check_only: bool) {
 }
 
 async fn cmd_uninstall(purge: bool, yes: bool) {
-    println!(
-        "\n{}",
-        "  HiveBear Uninstall  ".bold().white().on_red()
-    );
+    println!("\n{}", "  HiveBear Uninstall  ".bold().white().on_red());
     println!();
 
     let paths = hivebear_core::config::paths::AppPaths::new();
@@ -2452,7 +2454,10 @@ async fn cmd_uninstall(purge: bool, yes: bool) {
     println!("  Binary:  {}", binary_path.display());
     if purge {
         println!("  Config:  {}", paths.config_dir.display());
-        println!("  Data:    {} (including downloaded models)", paths.data_dir.display());
+        println!(
+            "  Data:    {} (including downloaded models)",
+            paths.data_dir.display()
+        );
     }
 
     if !yes {
@@ -2472,7 +2477,11 @@ async fn cmd_uninstall(purge: bool, yes: bool) {
         // Remove config directory
         if paths.config_dir.exists() {
             match std::fs::remove_dir_all(&paths.config_dir) {
-                Ok(_) => println!("{} Removed config: {}", "✓".green(), paths.config_dir.display()),
+                Ok(_) => println!(
+                    "{} Removed config: {}",
+                    "✓".green(),
+                    paths.config_dir.display()
+                ),
                 Err(e) => eprintln!("{} Failed to remove config: {}", "✗".red(), e),
             }
         }
@@ -2504,7 +2513,11 @@ async fn cmd_uninstall(purge: bool, yes: bool) {
         let trash_path = binary_path.with_extension("old");
         match std::fs::rename(&binary_path, &trash_path) {
             Ok(_) => {
-                println!("{} Marked binary for removal: {}", "✓".green(), binary_path.display());
+                println!(
+                    "{} Marked binary for removal: {}",
+                    "✓".green(),
+                    binary_path.display()
+                );
                 println!("  The file will be fully removed on next reboot.");
             }
             Err(e) => {
@@ -2521,9 +2534,6 @@ async fn cmd_uninstall(purge: bool, yes: bool) {
             "Your config and models are still at {}",
             paths.data_dir.display()
         );
-        println!(
-            "Run with {} to remove everything.",
-            "--purge".bold()
-        );
+        println!("Run with {} to remove everything.", "--purge".bold());
     }
 }
