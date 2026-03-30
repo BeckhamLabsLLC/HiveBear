@@ -1,7 +1,7 @@
 class Hivebear < Formula
   desc "AI that fits your machine — run LLMs on any device regardless of GPU"
   homepage "https://github.com/BeckhamLabsLLC/HiveBear"
-  version "0.1.2"
+  version "0.1.3"
   license "MIT"
 
   on_macos do
