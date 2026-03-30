@@ -289,23 +289,23 @@ jobs:
     name: Create GitHub Release
     permissions:
       contents: write
-    needs: [build-cli, build-desktop, verify-cargo-install]
+    needs: [build-cli, verify-cargo-install]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download CLI artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: cli-*
           path: artifacts
 
       - name: Collect release assets
         run: |
           mkdir -p release
           find artifacts/cli-* -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release/ \;
-          find artifacts/desktop-* -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" \) -exec cp {} release/ \;
 
       - name: Generate SHA256 checksums
         run: |
@@ -321,3 +321,42 @@ jobs:
             --title "$TAG_NAME" \
             --generate-notes \
             release/*
+
+  upload-desktop-assets:
+    name: Upload Desktop Assets to Release
+    permissions:
+      contents: write
+    needs: [create-release, build-desktop]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: artifacts
+
+      - name: Collect and rename desktop assets
+        run: |
+          mkdir -p release
+          # Collect all desktop artifacts
+          find artifacts/desktop-* -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" \) -exec cp {} release/ \;
+
+          # Create stable-named copies for website download buttons
+          cd release
+          for f in *.dmg; do [ -f "$f" ] && cp "$f" HiveBear.dmg; done
+          for f in *_x64_en-US.msi; do [ -f "$f" ] && cp "$f" HiveBear-x64.msi; done
+          for f in *x64-setup.exe; do [ -f "$f" ] && cp "$f" HiveBear-x64-setup.exe; done
+          for f in *_amd64.AppImage; do [ -f "$f" ] && cp "$f" HiveBear-x86_64.AppImage; done
+          for f in *_amd64.deb; do [ -f "$f" ] && cp "$f" HiveBear-x86_64.deb; done
+
+          # Generate checksums for desktop assets
+          sha256sum * > SHA256SUMS-desktop.txt
+
+      - name: Upload desktop assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$TAG_NAME" release/* --repo "$REPO" --clobber

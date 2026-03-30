@@ -225,6 +225,24 @@ enum Commands {
         #[command(subcommand)]
         action: account_commands::AccountAction,
     },
+
+    /// Update HiveBear to the latest version
+    Update {
+        /// Check for updates without installing
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Uninstall HiveBear from this system
+    Uninstall {
+        /// Also remove downloaded models, config, and all data
+        #[arg(long)]
+        purge: bool,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -448,6 +466,8 @@ async fn main() {
             context_length,
         } => cmd_quickstart(temperature, context_length).await,
         Commands::Account { action } => account_commands::cmd_account(action).await,
+        Commands::Update { check } => cmd_update(check).await,
+        Commands::Uninstall { purge, yes } => cmd_uninstall(purge, yes).await,
     }
 
     // Graceful mesh shutdown
@@ -2331,4 +2351,179 @@ async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator_u
     }
     let _ = coordinator.deregister().await;
     println!("{}", "Contribution stopped. Thank you!".green());
+}
+
+async fn cmd_update(check_only: bool) {
+    use self_update::backends::github::Update;
+
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    println!(
+        "\n{}",
+        "  HiveBear Update  ".bold().white().on_blue()
+    );
+    println!();
+    println!("Current version: {}", current_version.bold());
+    println!("Checking for updates...");
+
+    let target = self_update::get_target();
+    let ext = if cfg!(target_os = "windows") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    let asset_name = format!("hivebear-{}.{}", target, ext);
+
+    let updater = match Update::configure()
+        .repo_owner("BeckhamLabsLLC")
+        .repo_name("HiveBear")
+        .bin_name("hivebear")
+        .target(&asset_name)
+        .current_version(current_version)
+        .build()
+    {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("{} Failed to check for updates: {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
+    let latest = match updater.get_latest_release() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{} Failed to fetch latest release: {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
+    let latest_version = latest.version.trim_start_matches('v');
+
+    if latest_version == current_version {
+        println!(
+            "\n{} You are already on the latest version ({}).",
+            "✓".green().bold(),
+            current_version
+        );
+        return;
+    }
+
+    println!(
+        "\n{} New version available: {} → {}",
+        "→".cyan().bold(),
+        current_version,
+        latest_version.green().bold()
+    );
+
+    if check_only {
+        println!("\nRun {} to install the update.", "hivebear update".bold());
+        return;
+    }
+
+    println!("Downloading and installing {}...", latest_version);
+    match updater.update() {
+        Ok(status) => {
+            println!(
+                "\n{} Updated to version {}!",
+                "✓".green().bold(),
+                status.version()
+            );
+        }
+        Err(e) => {
+            eprintln!("{} Update failed: {}", "Error:".red().bold(), e);
+            eprintln!("\nYou can manually download the latest version from:");
+            eprintln!("  https://github.com/BeckhamLabsLLC/HiveBear/releases/latest");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_uninstall(purge: bool, yes: bool) {
+    println!(
+        "\n{}",
+        "  HiveBear Uninstall  ".bold().white().on_red()
+    );
+    println!();
+
+    let paths = hivebear_core::config::paths::AppPaths::new();
+    let binary_path = std::env::current_exe().unwrap_or_default();
+
+    println!("This will remove:");
+    println!("  Binary:  {}", binary_path.display());
+    if purge {
+        println!("  Config:  {}", paths.config_dir.display());
+        println!("  Data:    {} (including downloaded models)", paths.data_dir.display());
+    }
+
+    if !yes {
+        println!();
+        print!("Are you sure? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Uninstall cancelled.");
+            return;
+        }
+    }
+
+    if purge {
+        // Remove config directory
+        if paths.config_dir.exists() {
+            match std::fs::remove_dir_all(&paths.config_dir) {
+                Ok(_) => println!("{} Removed config: {}", "✓".green(), paths.config_dir.display()),
+                Err(e) => eprintln!("{} Failed to remove config: {}", "✗".red(), e),
+            }
+        }
+
+        // Remove data directory (models, etc.)
+        if paths.data_dir.exists() {
+            match std::fs::remove_dir_all(&paths.data_dir) {
+                Ok(_) => println!("{} Removed data: {}", "✓".green(), paths.data_dir.display()),
+                Err(e) => eprintln!("{} Failed to remove data: {}", "✗".red(), e),
+            }
+        }
+    }
+
+    // Remove the binary itself (on Unix, a running binary can delete itself)
+    #[cfg(unix)]
+    {
+        match std::fs::remove_file(&binary_path) {
+            Ok(_) => println!("{} Removed binary: {}", "✓".green(), binary_path.display()),
+            Err(e) => {
+                eprintln!("{} Failed to remove binary: {}", "✗".red(), e);
+                eprintln!("  You can manually delete it: rm {}", binary_path.display());
+            }
+        }
+    }
+
+    // On Windows, rename the binary so it's cleaned up on next reboot
+    #[cfg(windows)]
+    {
+        let trash_path = binary_path.with_extension("old");
+        match std::fs::rename(&binary_path, &trash_path) {
+            Ok(_) => {
+                println!("{} Marked binary for removal: {}", "✓".green(), binary_path.display());
+                println!("  The file will be fully removed on next reboot.");
+            }
+            Err(e) => {
+                eprintln!("{} Failed to remove binary: {}", "✗".red(), e);
+                eprintln!("  You can manually delete it after closing this terminal.");
+            }
+        }
+    }
+
+    println!();
+    println!("{}", "HiveBear has been uninstalled.".bold());
+    if !purge {
+        println!(
+            "Your config and models are still at {}",
+            paths.data_dir.display()
+        );
+        println!(
+            "Run with {} to remove everything.",
+            "--purge".bold()
+        );
+    }
 }

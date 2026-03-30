@@ -1,8 +1,17 @@
 target/
 node_modules/
 .git/
-apps/desktop/
-web/
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/src/
+apps/desktop/public/
+apps/desktop/index.html
+apps/desktop/package.json
+apps/desktop/package-lock.json
+apps/desktop/tsconfig*.json
+apps/desktop/vite.config.*
+web/node_modules/
+web/pkg/
 docs/
 *.md
 !README.md
@@ -13,7 +22,5 @@ packaging/
 .env
 *.env
 config.toml
-apps/desktop/dist/
-web/pkg/
 *.key
 identity.key
