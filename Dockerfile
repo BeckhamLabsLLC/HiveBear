@@ -2,7 +2,7 @@
 # Usage: docker run -it --rm -p 11434:11434 ghcr.io/beckhamlabsllc/hivebear quickstart
 
 # --- Builder stage ---
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.86-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
