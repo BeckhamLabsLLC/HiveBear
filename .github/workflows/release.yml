@@ -290,6 +290,7 @@ jobs:
     permissions:
       contents: write
     needs: [build-cli, verify-cargo-install]
+    if: ${{ !cancelled() && needs.verify-cargo-install.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -327,6 +328,7 @@ jobs:
     permissions:
       contents: write
     needs: [create-release, build-desktop]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:

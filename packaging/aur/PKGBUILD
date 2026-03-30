@@ -1,6 +1,6 @@
 # Maintainer: BeckhamLabs <hello@beckhamlabs.com>
 pkgname=hivebear-bin
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="AI that fits your machine — run LLMs on any device regardless of GPU"
 arch=('x86_64' 'aarch64')
