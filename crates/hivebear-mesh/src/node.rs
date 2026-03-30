@@ -55,7 +55,7 @@ impl MeshNode {
             tier,
             external_addr: tokio::sync::RwLock::new(None),
             stun_servers: vec!["stun.l.google.com:19302".into()],
-            relay_servers: vec!["relay.hivebear.dev:3478".into()],
+            relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
@@ -79,7 +79,7 @@ impl MeshNode {
             tier,
             external_addr: tokio::sync::RwLock::new(None),
             stun_servers: vec!["stun.l.google.com:19302".into()],
-            relay_servers: vec!["relay.hivebear.dev:3478".into()],
+            relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }

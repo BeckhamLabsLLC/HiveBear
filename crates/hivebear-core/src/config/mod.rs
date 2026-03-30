@@ -100,7 +100,7 @@ fn default_true() -> bool {
 }
 
 fn default_bootstrap_servers() -> Vec<String> {
-    vec!["https://mesh.hivebear.dev".into()]
+    vec!["https://mesh.hivebear.com".into()]
 }
 
 fn default_stun_servers() -> Vec<String> {
@@ -108,7 +108,7 @@ fn default_stun_servers() -> Vec<String> {
 }
 
 fn default_relay_servers() -> Vec<String> {
-    vec!["relay.hivebear.dev:3478".into()]
+    vec!["relay.hivebear.com:3478".into()]
 }
 
 fn default_compression() -> String {
@@ -235,7 +235,7 @@ impl Default for MeshConfig {
             enabled: true,
             auto_join: true,
             port: 7878,
-            coordination_server: "https://mesh.hivebear.dev".into(),
+            coordination_server: "https://mesh.hivebear.com".into(),
             bootstrap_servers: default_bootstrap_servers(),
             stun_servers: default_stun_servers(),
             relay_servers: default_relay_servers(),
