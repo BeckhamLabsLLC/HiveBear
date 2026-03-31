@@ -9,6 +9,25 @@ use crate::error::{InferenceError, Result};
 use crate::selector;
 use crate::types::*;
 
+/// Events emitted by the orchestrator during model loading and inference.
+///
+/// Consumers (e.g., the API server) can use these to surface informational
+/// messages to users — for example, telling them that a model has been
+/// distributed across the mesh because it exceeded local capacity.
+#[derive(Debug, Clone)]
+pub enum OrchestratorEvent {
+    /// A model was loaded using the mesh backend because all local engines failed.
+    MeshFallback {
+        reason: String,
+        model: String,
+    },
+    /// A model was loaded successfully.
+    ModelLoaded {
+        model: String,
+        engine: hivebear_core::types::InferenceEngine,
+    },
+}
+
 /// High-level inference orchestrator that manages engine selection,
 /// model loading, and generation across multiple backends.
 pub struct Orchestrator {
@@ -20,6 +39,8 @@ pub struct Orchestrator {
     model_info: Arc<Mutex<HashMap<u64, ModelInfo>>>,
     /// Whether a mesh backend has been registered (enables auto-routing).
     mesh_registered: std::sync::atomic::AtomicBool,
+    /// Recent events emitted during load/inference (last 16).
+    events: Arc<Mutex<Vec<OrchestratorEvent>>>,
 }
 
 impl Orchestrator {
@@ -31,6 +52,7 @@ impl Orchestrator {
             handle_backends: Arc::new(Mutex::new(HashMap::new())),
             model_info: Arc::new(Mutex::new(HashMap::new())),
             mesh_registered: std::sync::atomic::AtomicBool::new(false),
+            events: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -42,6 +64,7 @@ impl Orchestrator {
             handle_backends: Arc::new(Mutex::new(HashMap::new())),
             model_info: Arc::new(Mutex::new(HashMap::new())),
             mesh_registered: std::sync::atomic::AtomicBool::new(false),
+            events: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -73,6 +96,25 @@ impl Orchestrator {
         &self.profile
     }
 
+    /// Drain all pending orchestrator events.
+    ///
+    /// Returns and clears all events that have accumulated since the last
+    /// drain. Useful for the API layer to surface mesh-fallback messages
+    /// to users.
+    pub fn drain_events(&self) -> Vec<OrchestratorEvent> {
+        let mut events = self.events.lock().expect("lock poisoned");
+        std::mem::take(&mut *events)
+    }
+
+    /// Emit an event (internal helper).
+    fn emit_event(&self, event: OrchestratorEvent) {
+        let mut events = self.events.lock().expect("lock poisoned");
+        if events.len() >= 16 {
+            events.remove(0);
+        }
+        events.push(event);
+    }
+
     /// Load a model, automatically selecting the best engine.
     ///
     /// Tries local engines first. If all local engines fail and a mesh backend
@@ -93,6 +135,10 @@ impl Orchestrator {
                         tracing::info!(
                             "Local engine selection failed, falling back to mesh: {local_err}"
                         );
+                        self.emit_event(OrchestratorEvent::MeshFallback {
+                            reason: format!("No suitable local engine: {local_err}"),
+                            model: path.display().to_string(),
+                        });
                         mesh
                     } else {
                         return Err(local_err);
@@ -119,6 +165,10 @@ impl Orchestrator {
                         .get(hivebear_core::types::InferenceEngine::Mesh)
                     {
                         tracing::info!("Local load failed ({}), falling back to mesh", load_err);
+                        self.emit_event(OrchestratorEvent::MeshFallback {
+                            reason: format!("Local load failed: {load_err}"),
+                            model: path.display().to_string(),
+                        });
                         let handle = mesh.load_model(path, config).await?;
                         self.track_loaded_model(&handle, path, mesh.engine_id(), config);
                         return Ok(handle);

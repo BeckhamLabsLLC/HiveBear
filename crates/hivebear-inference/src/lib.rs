@@ -13,7 +13,7 @@ pub mod types;
 // Re-export key types for convenience
 pub use engine::{EngineRegistry, InferenceBackend};
 pub use error::{InferenceError, Result};
-pub use orchestrator::Orchestrator;
+pub use orchestrator::{Orchestrator, OrchestratorEvent};
 pub use types::{
     ChatMessage, ContentBlock, GenerateRequest, GenerateResponse, LoadConfig, ModelHandle,
     ModelInfo, OffloadConfig, SamplingParams, Token, ToolCallResponse, ToolChoice, ToolDefinition,

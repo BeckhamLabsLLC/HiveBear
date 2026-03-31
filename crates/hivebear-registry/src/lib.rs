@@ -1,6 +1,7 @@
 pub mod download;
 pub mod error;
 pub mod metadata;
+pub mod ollama_names;
 pub mod registry;
 pub mod storage;
 

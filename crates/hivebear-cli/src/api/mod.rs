@@ -1,5 +1,6 @@
 mod ollama;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -9,15 +10,117 @@ use axum::routing::{get, post};
 use axum::Router;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
-use hivebear_inference::{ChatMessage, GenerateRequest, ModelHandle, Orchestrator, SamplingParams};
+use hivebear_core::config::paths::AppPaths;
+use hivebear_core::types::HardwareProfile;
+use hivebear_core::Config;
+use hivebear_inference::{ChatMessage, GenerateRequest, LoadConfig, ModelHandle, Orchestrator, SamplingParams};
+use hivebear_registry::Registry;
 
+/// Shared application state for the API server.
+///
+/// Supports multiple concurrently loaded models. When a request arrives for
+/// a model that is not yet loaded, the server resolves it through the
+/// registry (downloading if necessary) and loads it into the orchestrator.
+#[allow(dead_code)]
 pub(crate) struct AppState {
     pub orchestrator: Orchestrator,
-    pub handle: ModelHandle,
-    pub model_name: String,
+    pub models: RwLock<HashMap<String, ModelHandle>>,
+    pub registry: Option<Registry>,
+    pub config: Config,
+    pub hw: HardwareProfile,
     pub api_key: Option<String>,
+    pub default_model: Option<String>,
+}
+
+impl AppState {
+    /// Resolve a model name to a loaded `ModelHandle`.
+    ///
+    /// If the model is already loaded, returns its handle immediately.
+    /// Otherwise, resolves the model through the registry (downloading if
+    /// needed) and loads it into the orchestrator.
+    pub async fn resolve_model(&self, model_name: &str) -> Result<ModelHandle, String> {
+        // Check if already loaded
+        {
+            let models = self.models.read().await;
+            if let Some(handle) = models.get(model_name) {
+                return Ok(handle.clone());
+            }
+        }
+
+        // Try to resolve and load
+        let Some(ref registry) = self.registry else {
+            return Err(format!(
+                "Model '{}' is not loaded and no registry is available for on-demand loading",
+                model_name
+            ));
+        };
+
+        // Try resolving through registry (checks local index + file paths)
+        let model_path = match registry.resolve(model_name).await {
+            Ok(path) => path,
+            Err(_) => {
+                // Model not installed — try to download it
+                tracing::info!("Model '{model_name}' not found locally, downloading...");
+                match registry
+                    .install(model_name, None, None, None)
+                    .await
+                {
+                    Ok(installed) => installed.path.join(&installed.filename),
+                    Err(e) => {
+                        return Err(format!(
+                            "Model '{}' not found and download failed: {}",
+                            model_name, e
+                        ));
+                    }
+                }
+            }
+        };
+
+        let load_config = LoadConfig {
+            context_length: 4096,
+            offload: hivebear_inference::OffloadConfig {
+                auto: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        match self.orchestrator.load(&model_path, &load_config).await {
+            Ok(handle) => {
+                let mut models = self.models.write().await;
+                models.insert(model_name.to_string(), handle.clone());
+                tracing::info!("Model '{model_name}' loaded successfully");
+                Ok(handle)
+            }
+            Err(e) => Err(format!("Failed to load model '{}': {}", model_name, e)),
+        }
+    }
+
+    /// Get a handle for the default model, or the only loaded model.
+    pub async fn default_handle(&self) -> Result<(String, ModelHandle), String> {
+        if let Some(ref name) = self.default_model {
+            let handle = self.resolve_model(name).await?;
+            return Ok((name.clone(), handle));
+        }
+
+        let models = self.models.read().await;
+        if models.len() == 1 {
+            let (name, handle) = models.iter().next().unwrap();
+            return Ok((name.clone(), handle.clone()));
+        }
+
+        if models.is_empty() {
+            return Err("No models loaded. Specify a model in your request.".to_string());
+        }
+
+        Err(format!(
+            "Multiple models loaded ({}). Specify which model to use in your request.",
+            models.keys().cloned().collect::<Vec<_>>().join(", ")
+        ))
+    }
 }
 
 // ── Auth middleware ───────────────────────────────────────────────────
@@ -59,46 +162,74 @@ async fn auth_middleware(
     (axum::http::StatusCode::UNAUTHORIZED, Json(body)).into_response()
 }
 
-/// Start the OpenAI-compatible API server.
-pub async fn start_server(
-    orchestrator: Orchestrator,
-    handle: ModelHandle,
-    model_name: String,
-    port: u16,
-    api_key: Option<String>,
-    bind_address: &str,
-    cors_origins: &[String],
-) {
+/// Configuration for starting the API server.
+pub struct ServerConfig {
+    pub orchestrator: Orchestrator,
+    pub models: HashMap<String, ModelHandle>,
+    pub default_model: Option<String>,
+    pub port: u16,
+    pub api_key: Option<String>,
+    pub bind_address: String,
+    pub cors_origins: Vec<String>,
+    pub with_registry: bool,
+}
+
+/// Start the API server (supports both single-model and multi-model modes).
+pub async fn start_server(config: ServerConfig) {
+    let hw = config.orchestrator.profile().clone();
+    let app_config = Config::load();
+
+    let registry = if config.with_registry {
+        let paths = AppPaths::new();
+        match Registry::new(&app_config, &paths).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("Warning: could not initialize registry for on-demand loading: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
-        orchestrator,
-        handle,
-        model_name,
-        api_key: api_key.clone(),
+        orchestrator: config.orchestrator,
+        models: RwLock::new(config.models),
+        registry,
+        config: app_config,
+        hw,
+        api_key: config.api_key.clone(),
+        default_model: config.default_model,
     });
 
     // Security warnings
-    if api_key.is_none() && bind_address != "127.0.0.1" && bind_address != "localhost" {
-        eprintln!("⚠️  WARNING: API server is network-accessible ({bind_address}) with NO authentication!");
-        eprintln!("   Anyone on your network can send inference requests.");
+    if config.api_key.is_none()
+        && config.bind_address != "127.0.0.1"
+        && config.bind_address != "localhost"
+    {
+        eprintln!("⚠️  WARNING: API server is network-accessible ({}) with NO authentication!", config.bind_address);
+        eprintln!(
+            "   Anyone on your network can send inference requests."
+        );
         eprintln!(
             "   Use --api-key <key> to require authentication, or --bind 127.0.0.1 for local-only."
         );
     }
 
-    if cors_origins.iter().any(|o| o == "*") && api_key.is_some() {
+    if config.cors_origins.iter().any(|o| o == "*") && config.api_key.is_some() {
         eprintln!("⚠️  WARNING: Wildcard CORS ('*') is enabled with authentication.");
         eprintln!("   Any website can make authenticated API requests if the key is exposed.");
         eprintln!("   Consider restricting CORS origins to specific domains.");
     }
 
     // Build CORS layer — default to localhost if no origins specified
-    let effective_origins: Vec<String> = if cors_origins.is_empty() {
+    let effective_origins: Vec<String> = if config.cors_origins.is_empty() {
         vec![
             "http://localhost:*".to_string(),
             "http://127.0.0.1:*".to_string(),
         ]
     } else {
-        cors_origins.to_vec()
+        config.cors_origins.clone()
     };
 
     let cors = if effective_origins.iter().any(|o| o == "*") {
@@ -132,19 +263,26 @@ pub async fn start_server(
         .layer(cors)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("{bind_address}:{port}"))
-        .await
-        .expect("Failed to bind to port");
+    let listener =
+        tokio::net::TcpListener::bind(format!("{}:{}", config.bind_address, config.port))
+            .await
+            .expect("Failed to bind to port");
 
-    println!("API server listening on http://{}:{}", bind_address, port);
+    println!(
+        "API server listening on http://{}:{}",
+        config.bind_address, config.port
+    );
     println!("  OpenAI:  POST /v1/chat/completions");
     println!("  OpenAI:  GET  /v1/models");
     println!("  Ollama:  POST /api/chat");
     println!("  Ollama:  POST /api/generate");
     println!("  Ollama:  GET  /api/tags");
     println!("  Ollama:  POST /api/show");
+    println!("  Ollama:  POST /api/pull");
+    println!("  Ollama:  DELETE /api/delete");
+    println!("  Ollama:  GET  /api/ps");
     println!("  Health:  GET  /health");
-    if let Some(key) = &api_key {
+    if let Some(key) = &config.api_key {
         let masked = if key.len() > 8 {
             format!("{}...{}", &key[..4], &key[key.len() - 4..])
         } else {
@@ -159,10 +297,41 @@ pub async fn start_server(
     axum::serve(listener, app).await.expect("Server error");
 }
 
+// ── Legacy single-model start_server (used by `hivebear run --api`) ──
+
+/// Start the API server with a single pre-loaded model.
+/// Wraps the new multi-model `start_server` for backwards compatibility.
+pub async fn start_server_single(
+    orchestrator: Orchestrator,
+    handle: ModelHandle,
+    model_name: String,
+    port: u16,
+    api_key: Option<String>,
+    bind_address: &str,
+    cors_origins: &[String],
+) {
+    let mut models = HashMap::new();
+    models.insert(model_name.clone(), handle);
+
+    start_server(ServerConfig {
+        orchestrator,
+        models,
+        default_model: Some(model_name),
+        port,
+        api_key,
+        bind_address: bind_address.to_string(),
+        cors_origins: cors_origins.to_vec(),
+        with_registry: false,
+    })
+    .await;
+}
+
 // ── OpenAI-compatible request/response types ──────────────────────────
 
 #[derive(Deserialize)]
 struct ChatCompletionRequest {
+    #[serde(default)]
+    model: Option<String>,
     messages: Vec<ApiMessage>,
     #[serde(default = "default_max_tokens")]
     max_tokens: u32,
@@ -251,13 +420,19 @@ async fn health() -> &'static str {
 }
 
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListResponse> {
-    Json(ModelListResponse {
-        object: "list".into(),
-        data: vec![ModelEntry {
-            id: state.model_name.clone(),
+    let models = state.models.read().await;
+    let data: Vec<ModelEntry> = models
+        .keys()
+        .map(|name| ModelEntry {
+            id: name.clone(),
             object: "model".into(),
             owned_by: "hivebear".into(),
-        }],
+        })
+        .collect();
+
+    Json(ModelListResponse {
+        object: "list".into(),
+        data,
     })
 }
 
@@ -265,6 +440,19 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> axum::response::Response {
+    // Resolve the model handle
+    let (model_name, handle) = if let Some(ref requested) = req.model {
+        match state.resolve_model(requested).await {
+            Ok(h) => (requested.clone(), h),
+            Err(e) => return error_response(&e),
+        }
+    } else {
+        match state.default_handle().await {
+            Ok(pair) => pair,
+            Err(e) => return error_response(&e),
+        }
+    };
+
     let messages: Vec<ChatMessage> = req
         .messages
         .into_iter()
@@ -283,22 +471,24 @@ async fn chat_completions(
             top_p: req.top_p.unwrap_or(0.9),
             ..Default::default()
         },
-        model_name: Some(state.model_name.clone()),
+        model_name: Some(model_name.clone()),
         ..Default::default()
     };
 
     if req.stream {
-        stream_response(state, gen_req).await
+        stream_response(state, handle, model_name, gen_req).await
     } else {
-        non_stream_response(state, gen_req).await
+        non_stream_response(state, handle, model_name, gen_req).await
     }
 }
 
 async fn non_stream_response(
     state: Arc<AppState>,
+    handle: ModelHandle,
+    model_name: String,
     req: GenerateRequest,
 ) -> axum::response::Response {
-    match state.orchestrator.generate(&state.handle, &req).await {
+    match state.orchestrator.generate(&handle, &req).await {
         Ok(response) => {
             let text = match response {
                 hivebear_inference::GenerateResponse::Text(t) => t,
@@ -308,7 +498,7 @@ async fn non_stream_response(
             let resp = ChatCompletionResponse {
                 id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
                 object: "chat.completion".into(),
-                model: state.model_name.clone(),
+                model: model_name,
                 choices: vec![Choice {
                     index: 0,
                     message: ChoiceMessage {
@@ -330,11 +520,15 @@ async fn non_stream_response(
     }
 }
 
-async fn stream_response(state: Arc<AppState>, req: GenerateRequest) -> axum::response::Response {
-    let model_name = state.model_name.clone();
+async fn stream_response(
+    state: Arc<AppState>,
+    handle: ModelHandle,
+    model_name: String,
+    req: GenerateRequest,
+) -> axum::response::Response {
     let chat_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
 
-    let stream = match state.orchestrator.stream(&state.handle, &req) {
+    let stream = match state.orchestrator.stream(&handle, &req) {
         Ok(s) => s,
         Err(e) => {
             let body = serde_json::json!({
@@ -392,4 +586,11 @@ async fn stream_response(state: Arc<AppState>, req: GenerateRequest) -> axum::re
     Sse::new(event_stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+fn error_response(message: &str) -> axum::response::Response {
+    let body = serde_json::json!({
+        "error": { "message": message, "type": "server_error" }
+    });
+    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

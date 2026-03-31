@@ -242,6 +242,63 @@ enum Commands {
         action: account_commands::AccountAction,
     },
 
+    /// Start a persistent API server (Ollama + OpenAI compatible).
+    /// Unlike `run --api`, this starts with no model loaded and downloads
+    /// models on demand — just like Ollama's `ollama serve`.
+    #[cfg(feature = "api")]
+    Serve {
+        /// API server port (default: 11434, Ollama's default)
+        #[arg(long, default_value = "11434")]
+        port: u16,
+
+        /// Pre-load specific models (can be repeated)
+        #[arg(long)]
+        model: Vec<String>,
+
+        /// Disable mesh network for overflow
+        #[arg(long)]
+        no_mesh: bool,
+
+        /// Coordinator server URL
+        #[arg(long)]
+        coordinator: Option<String>,
+
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+
+        /// Disable API authentication
+        #[arg(long)]
+        no_auth: bool,
+
+        /// API key (overrides config; auto-generated if not set)
+        #[arg(long)]
+        api_key: Option<String>,
+    },
+
+    /// Share your hive with a public link anyone can chat with
+    Share {
+        /// Title for the shared hive
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Model being shared (auto-detected from running swarm if omitted)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Maximum concurrent chat users
+        #[arg(long, default_value = "10")]
+        max_chatters: u32,
+
+        /// Link expiry (e.g., "24h", "7d", "never")
+        #[arg(long, default_value = "24h")]
+        expires: String,
+
+        /// Coordinator server URL
+        #[arg(long)]
+        coordinator: Option<String>,
+    },
+
     /// Update HiveBear to the latest version
     Update {
         /// Check for updates without installing
@@ -411,7 +468,17 @@ async fn main() {
             | Commands::Mesh { .. }
             | Commands::Contribute { .. }
             | Commands::Quickstart { .. }
-    );
+            | Commands::Share { .. }
+    ) || {
+        #[cfg(feature = "api")]
+        {
+            matches!(cli.command, Commands::Serve { no_mesh: false, .. })
+        }
+        #[cfg(not(feature = "api"))]
+        {
+            false
+        }
+    };
 
     let config = hivebear_core::Config::load();
     if needs_mesh {
@@ -489,6 +556,27 @@ async fn main() {
             context_length,
         } => cmd_quickstart(temperature, context_length).await,
         Commands::Account { action } => account_commands::cmd_account(action).await,
+        #[cfg(feature = "api")]
+        Commands::Serve {
+            port,
+            model: models,
+            no_mesh: _,
+            coordinator: _,
+            bind,
+            no_auth,
+            api_key,
+        } => {
+            cmd_serve(port, models, no_auth, api_key, bind).await
+        }
+        Commands::Share {
+            title,
+            model,
+            max_chatters,
+            expires,
+            coordinator,
+        } => {
+            cmd_share(title, model, max_chatters, expires, coordinator).await
+        }
         Commands::Update { check } => cmd_update(check).await,
         Commands::Uninstall { purge, yes } => cmd_uninstall(purge, yes).await,
     }
@@ -1128,7 +1216,7 @@ async fn cmd_run(
                 "{}",
                 format!("Starting API server on {bind_addr}:{port}...").green()
             );
-            api::start_server(
+            api::start_server_single(
                 orchestrator,
                 handle,
                 model_name,
@@ -1253,6 +1341,173 @@ async fn cmd_run(
     if let Err(e) = orchestrator.unload(&handle).await {
         tracing::warn!("Failed to unload model: {e}");
     }
+}
+
+/// `hivebear serve` — persistent multi-model API server (Ollama + OpenAI compatible).
+///
+/// Unlike `hivebear run --api` which requires specifying a model upfront,
+/// `serve` starts empty and downloads/loads models on demand when API
+/// requests arrive — matching Ollama's behavior exactly.
+#[cfg(feature = "api")]
+async fn cmd_serve(
+    port: u16,
+    preload_models: Vec<String>,
+    no_auth: bool,
+    cli_api_key: Option<String>,
+    bind: String,
+) {
+    use std::collections::HashMap;
+
+    println!("\n{}", "  HiveBear Serve  ".bold().white().on_blue());
+    println!();
+    println!(
+        "{}",
+        "Ollama + OpenAI compatible API server".dimmed()
+    );
+    println!(
+        "{}",
+        format!("Listening on http://{}:{}", bind, port).green()
+    );
+    println!();
+
+    let hw = hivebear_core::profile();
+    let config = Config::load();
+    let orchestrator = create_orchestrator(hw.clone());
+
+    // Pre-load any specified models
+    let mut models = HashMap::new();
+    let mut default_model = None;
+
+    if !preload_models.is_empty() {
+        let registry_models = preload_models.clone();
+        let model_path_resolver = registry_commands::resolve_model;
+
+        for model_id in &registry_models {
+            println!("Pre-loading: {}", model_id.bold());
+            let resolved = model_path_resolver(model_id, &hw).await;
+            let load_config = hivebear_inference::LoadConfig {
+                context_length: 4096,
+                offload: hivebear_inference::OffloadConfig {
+                    auto: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            match orchestrator
+                .load(std::path::Path::new(&resolved), &load_config)
+                .await
+            {
+                Ok(handle) => {
+                    if default_model.is_none() {
+                        default_model = Some(model_id.clone());
+                    }
+                    models.insert(model_id.clone(), handle);
+                    println!("  {} {}", "✓".green(), model_id);
+                }
+                Err(e) => {
+                    eprintln!("  {} {} — {}", "✗".red(), model_id, e);
+                }
+            }
+        }
+        println!();
+    }
+
+    // Resolve API key
+    let resolved_key = if no_auth {
+        None
+    } else if let Some(key) = cli_api_key {
+        Some(key)
+    } else if let Some(key) = config.api.api_key.clone() {
+        Some(key)
+    } else {
+        let key = generate_api_key();
+        let mut save_config = config.clone();
+        save_config.api.api_key = Some(key.clone());
+        if let Err(e) = save_config.save() {
+            eprintln!("Warning: could not save generated API key: {e}");
+        }
+        Some(key)
+    };
+
+    if preload_models.is_empty() {
+        println!(
+            "{}",
+            "No models pre-loaded. Models will be downloaded on first request.".dimmed()
+        );
+        println!(
+            "{}",
+            "Tip: use --model <name> to pre-load models at startup.".dimmed()
+        );
+        println!();
+    }
+
+    println!(
+        "{}",
+        "Point your Ollama-compatible tools to this server:".dimmed()
+    );
+    println!(
+        "  {}",
+        format!("OLLAMA_HOST=http://{}:{}", bind, port).bold()
+    );
+    println!();
+
+    api::start_server(api::ServerConfig {
+        orchestrator,
+        models,
+        default_model,
+        port,
+        api_key: resolved_key,
+        bind_address: bind,
+        cors_origins: config.api.cors_origins.clone(),
+        with_registry: true,
+    })
+    .await;
+}
+
+/// `hivebear share` — create a shareable link for your hive.
+async fn cmd_share(
+    title: Option<String>,
+    _model: Option<String>,
+    _max_chatters: u32,
+    _expires: String,
+    coordinator: Option<String>,
+) {
+    let config = Config::load();
+    let coordinator_url = coordinator
+        .unwrap_or_else(|| config.mesh.coordination_server.clone());
+
+    println!("\n{}", "  HiveBear Share  ".bold().white().on_green());
+    println!();
+
+    // Check if mesh is running
+    let Some(_node) = MESH_NODE.get() else {
+        eprintln!(
+            "{}",
+            "Mesh is not running. Start a mesh node first with `hivebear contribute`.".red().bold()
+        );
+        eprintln!(
+            "{}",
+            "Then run `hivebear share` to create a shareable link.".dimmed()
+        );
+        return;
+    };
+
+    // TODO: Implement Hive Link creation via coordination server API
+    // For now, print a placeholder showing the intended flow
+    let title_str = title.unwrap_or_else(|| "My Hive".to_string());
+    println!("Creating Hive Link: {}", title_str.bold());
+    println!("Coordinator: {}", coordinator_url.dimmed());
+    println!();
+    eprintln!(
+        "{}",
+        "Hive Links require the coordination server to support the /api/hive-links endpoint."
+            .yellow()
+    );
+    eprintln!(
+        "{}",
+        "This feature will be fully functional once the coordination server is updated."
+            .dimmed()
+    );
 }
 
 fn cmd_engines() {

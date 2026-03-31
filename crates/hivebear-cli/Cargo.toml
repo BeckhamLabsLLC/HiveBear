@@ -32,6 +32,7 @@ indicatif = "0.17"
 serde_json = "1"
 toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+tokio-stream = "0.1"
 async-trait = "0.1"
 futures = "0.3"
 axum = { version = "0.8", optional = true }
@@ -39,7 +40,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 tower = "0.5"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rpassword = "7"
 hex = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
