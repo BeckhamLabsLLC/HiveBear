@@ -93,7 +93,10 @@ impl CloudProtocol for AnthropicProtocol {
                         "content": content,
                     }))
                 }
-                ChatMessage::Assistant { content, tool_calls } => {
+                ChatMessage::Assistant {
+                    content,
+                    tool_calls,
+                } => {
                     let mut blocks = Vec::new();
                     if let Some(text) = content {
                         if !text.is_empty() {

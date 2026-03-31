@@ -16,7 +16,10 @@ use tower_http::cors::{Any, CorsLayer};
 use hivebear_core::config::paths::AppPaths;
 use hivebear_core::types::HardwareProfile;
 use hivebear_core::Config;
-use hivebear_inference::{ChatMessage, ContentPart, GenerateRequest, LoadConfig, ModelHandle, Orchestrator, SamplingParams};
+use hivebear_inference::{
+    ChatMessage, ContentPart, GenerateRequest, LoadConfig, ModelHandle, Orchestrator,
+    SamplingParams,
+};
 use hivebear_registry::Registry;
 
 /// Shared application state for the API server.
@@ -78,10 +81,7 @@ impl AppState {
             Err(_) => {
                 // Model not installed — try to download it
                 tracing::info!("Model '{model_name}' not found locally, downloading...");
-                match registry
-                    .install(model_name, None, None, None)
-                    .await
-                {
+                match registry.install(model_name, None, None, None).await {
                     Ok(installed) => installed.path.join(&installed.filename),
                     Err(e) => {
                         return Err(format!(
@@ -221,10 +221,11 @@ pub async fn start_server(config: ServerConfig) {
         && config.bind_address != "127.0.0.1"
         && config.bind_address != "localhost"
     {
-        eprintln!("⚠️  WARNING: API server is network-accessible ({}) with NO authentication!", config.bind_address);
         eprintln!(
-            "   Anyone on your network can send inference requests."
+            "⚠️  WARNING: API server is network-accessible ({}) with NO authentication!",
+            config.bind_address
         );
+        eprintln!("   Anyone on your network can send inference requests.");
         eprintln!(
             "   Use --api-key <key> to require authentication, or --bind 127.0.0.1 for local-only."
         );
@@ -552,7 +553,7 @@ struct ModelEntry {
 // ── Conversion helpers ──────────────────────────────────────────────
 
 fn convert_api_messages(messages: Vec<ApiMessage>) -> Vec<ChatMessage> {
-    use hivebear_inference::{ToolCallResponse};
+    use hivebear_inference::ToolCallResponse;
 
     messages
         .into_iter()
@@ -627,9 +628,7 @@ fn convert_tools(tools: &[ApiToolDefinition]) -> Vec<hivebear_inference::ToolDef
         .collect()
 }
 
-fn convert_tool_choice(
-    choice: &Option<serde_json::Value>,
-) -> hivebear_inference::ToolChoice {
+fn convert_tool_choice(choice: &Option<serde_json::Value>) -> hivebear_inference::ToolChoice {
     use hivebear_inference::ToolChoice;
     match choice {
         None => ToolChoice::Auto,
@@ -661,9 +660,7 @@ fn convert_stop(stop: &Option<StopSequences>) -> Vec<String> {
     }
 }
 
-fn convert_tool_call_response(
-    tc: hivebear_inference::ToolCallResponse,
-) -> ApiToolCallResponse {
+fn convert_tool_call_response(tc: hivebear_inference::ToolCallResponse) -> ApiToolCallResponse {
     ApiToolCallResponse {
         id: tc.call_id,
         _type: "function".into(),
@@ -754,9 +751,7 @@ async fn chat_completions(
         tools: convert_tools(&req.tools),
         tool_choice: convert_tool_choice(&req.tool_choice),
         stop_sequences: convert_stop(&req.stop),
-        output_schema: req
-            .response_format
-            .and_then(|rf| rf.json_schema),
+        output_schema: req.response_format.and_then(|rf| rf.json_schema),
         model_name: Some(model_name.clone()),
         ..Default::default()
     };
@@ -777,12 +772,12 @@ async fn non_stream_response(
     match state.orchestrator.generate(&handle, &req).await {
         Ok(response) => {
             let (content, tool_calls, finish_reason) = match response {
-                hivebear_inference::GenerateResponse::Text(t) => {
-                    (Some(t), None, "stop")
-                }
-                hivebear_inference::GenerateResponse::ToolCall(tc) => {
-                    (None, Some(vec![convert_tool_call_response(tc)]), "tool_calls")
-                }
+                hivebear_inference::GenerateResponse::Text(t) => (Some(t), None, "stop"),
+                hivebear_inference::GenerateResponse::ToolCall(tc) => (
+                    None,
+                    Some(vec![convert_tool_call_response(tc)]),
+                    "tool_calls",
+                ),
                 hivebear_inference::GenerateResponse::Mixed(blocks) => {
                     let mut text_parts = Vec::new();
                     let mut calls = Vec::new();
@@ -800,7 +795,11 @@ async fn non_stream_response(
                         Some(text_parts.join(""))
                     };
                     let tool_calls = if calls.is_empty() { None } else { Some(calls) };
-                    let reason = if tool_calls.is_some() { "tool_calls" } else { "stop" };
+                    let reason = if tool_calls.is_some() {
+                        "tool_calls"
+                    } else {
+                        "stop"
+                    };
                     (text, tool_calls, reason)
                 }
             };

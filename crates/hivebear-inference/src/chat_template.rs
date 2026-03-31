@@ -186,7 +186,9 @@ fn render_gemma(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String {
             }
             ChatMessage::Assistant { content, .. } => {
                 let content_str = content.as_deref().unwrap_or("");
-                prompt.push_str(&format!("<start_of_turn>model\n{content_str}<end_of_turn>\n"));
+                prompt.push_str(&format!(
+                    "<start_of_turn>model\n{content_str}<end_of_turn>\n"
+                ));
             }
             ChatMessage::ToolResult { content, .. } => {
                 prompt.push_str(&format!(

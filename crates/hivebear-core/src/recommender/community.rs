@@ -32,10 +32,9 @@ pub fn merge_community_data(
             let sample_factor = (summary.sample_count.min(20) as f64) / 20.0;
             let blend_weight = summary.hardware_similarity * sample_factor * 0.6;
 
-            rec.estimated_tokens_per_sec = (rec.estimated_tokens_per_sec as f64
-                * (1.0 - blend_weight)
-                + summary.tokens_per_sec_p50 as f64 * blend_weight)
-                as f32;
+            rec.estimated_tokens_per_sec =
+                (rec.estimated_tokens_per_sec as f64 * (1.0 - blend_weight)
+                    + summary.tokens_per_sec_p50 as f64 * blend_weight) as f32;
 
             // Boost confidence when community data confirms the estimate (within 30%).
             let ratio = if summary.tokens_per_sec_p50 > 0.0 {
@@ -44,8 +43,8 @@ pub fn merge_community_data(
                 1.0
             };
             if (0.7..=1.3).contains(&ratio) {
-                rec.confidence = (rec.confidence + 0.1 * summary.hardware_similarity as f32)
-                    .clamp(0.1, 0.99);
+                rec.confidence =
+                    (rec.confidence + 0.1 * summary.hardware_similarity as f32).clamp(0.1, 0.99);
             }
         }
     }

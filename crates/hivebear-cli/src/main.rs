@@ -503,7 +503,17 @@ async fn main() {
             iterations,
             share,
             no_share,
-        } => cmd_benchmark(duration, model, generate_tokens, iterations, share, no_share).await,
+        } => {
+            cmd_benchmark(
+                duration,
+                model,
+                generate_tokens,
+                iterations,
+                share,
+                no_share,
+            )
+            .await
+        }
         Commands::Config { action } => cmd_config(action),
         Commands::Run {
             model,
@@ -565,18 +575,14 @@ async fn main() {
             bind,
             no_auth,
             api_key,
-        } => {
-            cmd_serve(port, models, no_auth, api_key, bind).await
-        }
+        } => cmd_serve(port, models, no_auth, api_key, bind).await,
         Commands::Share {
             title,
             model,
             max_chatters,
             expires,
             coordinator,
-        } => {
-            cmd_share(title, model, max_chatters, expires, coordinator).await
-        }
+        } => cmd_share(title, model, max_chatters, expires, coordinator).await,
         Commands::Update { check } => cmd_update(check).await,
         Commands::Uninstall { purge, yes } => cmd_uninstall(purge, yes).await,
     }
@@ -738,10 +744,7 @@ async fn share_benchmark_result(
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            println!(
-                "  {}",
-                "Benchmark shared with community.".dimmed()
-            );
+            println!("  {}", "Benchmark shared with community.".dimmed());
         }
         Ok(resp) => {
             tracing::debug!("Benchmark share returned {}", resp.status());
@@ -1360,10 +1363,7 @@ async fn cmd_serve(
 
     println!("\n{}", "  HiveBear Serve  ".bold().white().on_blue());
     println!();
-    println!(
-        "{}",
-        "Ollama + OpenAI compatible API server".dimmed()
-    );
+    println!("{}", "Ollama + OpenAI compatible API server".dimmed());
     println!(
         "{}",
         format!("Listening on http://{}:{}", bind, port).green()
@@ -1473,8 +1473,7 @@ async fn cmd_share(
     coordinator: Option<String>,
 ) {
     let config = Config::load();
-    let coordinator_url = coordinator
-        .unwrap_or_else(|| config.mesh.coordination_server.clone());
+    let coordinator_url = coordinator.unwrap_or_else(|| config.mesh.coordination_server.clone());
 
     println!("\n{}", "  HiveBear Share  ".bold().white().on_green());
     println!();
@@ -1483,7 +1482,9 @@ async fn cmd_share(
     let Some(_node) = MESH_NODE.get() else {
         eprintln!(
             "{}",
-            "Mesh is not running. Start a mesh node first with `hivebear contribute`.".red().bold()
+            "Mesh is not running. Start a mesh node first with `hivebear contribute`."
+                .red()
+                .bold()
         );
         eprintln!(
             "{}",
@@ -1505,8 +1506,7 @@ async fn cmd_share(
     );
     eprintln!(
         "{}",
-        "This feature will be fully functional once the coordination server is updated."
-            .dimmed()
+        "This feature will be fully functional once the coordination server is updated.".dimmed()
     );
 }
 

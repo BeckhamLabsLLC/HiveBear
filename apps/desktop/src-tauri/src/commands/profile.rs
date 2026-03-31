@@ -35,14 +35,19 @@ pub async fn get_recommendations(
         }
 
         let community_data = match state.http_client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                resp.json::<QueryResponse>().await.map(|d| d.results).unwrap_or_default()
-            }
+            Ok(resp) if resp.status().is_success() => resp
+                .json::<QueryResponse>()
+                .await
+                .map(|d| d.results)
+                .unwrap_or_default(),
             _ => vec![],
         };
 
-        let recs =
-            hivebear_core::recommender::recommend_with_community(&state.profile, &config, &community_data);
+        let recs = hivebear_core::recommender::recommend_with_community(
+            &state.profile,
+            &config,
+            &community_data,
+        );
         Ok(recs)
     } else {
         let recs = hivebear_core::recommender::recommend(&state.profile, &config);

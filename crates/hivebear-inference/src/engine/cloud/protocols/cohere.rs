@@ -39,20 +39,26 @@ impl CohereProtocol {
                     "content": text
                 })
             }
-            ChatMessage::Assistant { content, tool_calls } => {
+            ChatMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 let mut msg = serde_json::json!({
                     "role": "assistant",
                     "content": content.as_deref().unwrap_or(""),
                 });
                 if !tool_calls.is_empty() {
-                    msg["tool_calls"] = serde_json::json!(tool_calls.iter().map(|tc| serde_json::json!({
-                        "id": tc.call_id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.tool_name,
-                            "arguments": tc.arguments.to_string(),
-                        }
-                    })).collect::<Vec<_>>());
+                    msg["tool_calls"] = serde_json::json!(tool_calls
+                        .iter()
+                        .map(|tc| serde_json::json!({
+                            "id": tc.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.tool_name,
+                                "arguments": tc.arguments.to_string(),
+                            }
+                        }))
+                        .collect::<Vec<_>>());
                 }
                 msg
             }

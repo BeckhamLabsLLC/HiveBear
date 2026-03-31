@@ -362,29 +362,55 @@ mod tests {
         let profile = make_profile(8, 16, 8, ComputeApi::Cuda, "linux", "x86_64");
         let fp = HardwareFingerprint::from_profile(&profile);
         let score = similarity(&fp, &fp);
-        assert!((score - 1.0).abs() < f64::EPSILON, "Exact match should be 1.0, got {score}");
+        assert!(
+            (score - 1.0).abs() < f64::EPSILON,
+            "Exact match should be 1.0, got {score}"
+        );
     }
 
     #[test]
     fn test_similarity_no_match() {
         let fp_a = HardwareFingerprint::from_profile(&make_profile(
-            2, 4, 0, ComputeApi::None, "linux", "x86_64",
+            2,
+            4,
+            0,
+            ComputeApi::None,
+            "linux",
+            "x86_64",
         ));
         let fp_b = HardwareFingerprint::from_profile(&make_profile(
-            64, 256, 48, ComputeApi::Cuda, "windows", "aarch64",
+            64,
+            256,
+            48,
+            ComputeApi::Cuda,
+            "windows",
+            "aarch64",
         ));
         let score = similarity(&fp_a, &fp_b);
-        assert!(score < 0.3, "Completely different hardware should score low, got {score}");
+        assert!(
+            score < 0.3,
+            "Completely different hardware should score low, got {score}"
+        );
     }
 
     #[test]
     fn test_similarity_partial() {
         // Same GPU class and compute API, different RAM and cores
         let fp_a = HardwareFingerprint::from_profile(&make_profile(
-            8, 16, 8, ComputeApi::Cuda, "linux", "x86_64",
+            8,
+            16,
+            8,
+            ComputeApi::Cuda,
+            "linux",
+            "x86_64",
         ));
         let fp_b = HardwareFingerprint::from_profile(&make_profile(
-            16, 32, 12, ComputeApi::Cuda, "linux", "x86_64",
+            16,
+            32,
+            12,
+            ComputeApi::Cuda,
+            "linux",
+            "x86_64",
         ));
         let score = similarity(&fp_a, &fp_b);
         assert!(

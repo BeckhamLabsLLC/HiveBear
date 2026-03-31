@@ -411,10 +411,7 @@ mod tests {
     #[test]
     fn test_resolve_with_size() {
         let result = resolve("llama3.1:70b").unwrap();
-        assert_eq!(
-            result.repo_id,
-            "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF"
-        );
+        assert_eq!(result.repo_id, "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF");
     }
 
     #[test]
@@ -434,10 +431,7 @@ mod tests {
     #[test]
     fn test_resolve_size_and_quant() {
         let result = resolve("llama3.1:70b-q4_0").unwrap();
-        assert_eq!(
-            result.repo_id,
-            "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF"
-        );
+        assert_eq!(result.repo_id, "bartowski/Meta-Llama-3.1-70B-Instruct-GGUF");
         assert_eq!(result.quantization.as_deref(), Some("q4_0"));
     }
 

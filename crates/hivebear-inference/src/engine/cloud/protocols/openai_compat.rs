@@ -118,7 +118,10 @@ impl CloudProtocol for OpenAiCompatProtocol {
                         })
                     }
                 }
-                ChatMessage::Assistant { content, tool_calls } => {
+                ChatMessage::Assistant {
+                    content,
+                    tool_calls,
+                } => {
                     let mut msg = json!({
                         "role": "assistant",
                     });
@@ -126,14 +129,17 @@ impl CloudProtocol for OpenAiCompatProtocol {
                         msg["content"] = json!(text);
                     }
                     if !tool_calls.is_empty() {
-                        msg["tool_calls"] = json!(tool_calls.iter().map(|tc| json!({
-                            "id": tc.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.tool_name,
-                                "arguments": tc.arguments.to_string(),
-                            }
-                        })).collect::<Vec<_>>());
+                        msg["tool_calls"] = json!(tool_calls
+                            .iter()
+                            .map(|tc| json!({
+                                "id": tc.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.tool_name,
+                                    "arguments": tc.arguments.to_string(),
+                                }
+                            }))
+                            .collect::<Vec<_>>());
                     }
                     msg
                 }

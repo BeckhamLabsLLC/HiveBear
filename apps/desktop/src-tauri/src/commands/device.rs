@@ -74,11 +74,8 @@ pub fn can_contribute_to_mesh(state: State<'_, AppState>) -> CmdResult<MeshEligi
     }
 
     if mobile.mesh_charging_only {
-        match &profile.platform.power_source {
-            hivebear_core::types::PowerSource::Battery { .. } => {
-                reasons.push("Device is on battery (mesh requires charging)".to_string());
-            }
-            _ => {}
+        if let hivebear_core::types::PowerSource::Battery { .. } = &profile.platform.power_source {
+            reasons.push("Device is on battery (mesh requires charging)".to_string());
         }
     }
 

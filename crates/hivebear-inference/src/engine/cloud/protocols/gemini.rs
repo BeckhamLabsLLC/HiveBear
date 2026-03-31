@@ -53,7 +53,10 @@ impl GeminiProtocol {
                     "parts": gemini_parts
                 }))
             }
-            ChatMessage::Assistant { content, tool_calls } => {
+            ChatMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 let mut parts = Vec::new();
                 if let Some(text) = content {
                     if !text.is_empty() {

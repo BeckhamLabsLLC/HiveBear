@@ -17,10 +17,7 @@ use crate::types::*;
 #[derive(Debug, Clone)]
 pub enum OrchestratorEvent {
     /// A model was loaded using the mesh backend because all local engines failed.
-    MeshFallback {
-        reason: String,
-        model: String,
-    },
+    MeshFallback { reason: String, model: String },
     /// A model was loaded successfully.
     ModelLoaded {
         model: String,

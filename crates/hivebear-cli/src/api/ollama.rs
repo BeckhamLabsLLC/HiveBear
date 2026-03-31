@@ -430,9 +430,7 @@ async fn ollama_tags(State(state): State<Arc<AppState>>) -> Json<OllamaTagsRespo
         }
     }
 
-    Json(OllamaTagsResponse {
-        models: all_models,
-    })
+    Json(OllamaTagsResponse { models: all_models })
 }
 
 /// POST /api/show — Show model info (Ollama format)
@@ -671,11 +669,7 @@ async fn ollama_delete(
 
     match registry.remove(&req.model).await {
         Ok(freed) => {
-            tracing::info!(
-                "Deleted model '{}', freed {} bytes",
-                req.model,
-                freed
-            );
+            tracing::info!("Deleted model '{}', freed {} bytes", req.model, freed);
             axum::http::StatusCode::OK.into_response()
         }
         Err(e) => error_response(&format!("Failed to delete '{}': {e}", req.model)),

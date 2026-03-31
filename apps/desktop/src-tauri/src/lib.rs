@@ -21,7 +21,9 @@ pub fn run() {
             // On mobile, use Tauri's app data dir (Android internal storage).
             // On desktop, use the default ProjectDirs-based paths.
             let app_state = if cfg!(target_os = "android") || cfg!(target_os = "ios") {
-                let base = app.path().app_data_dir()
+                let base = app
+                    .path()
+                    .app_data_dir()
                     .expect("Failed to resolve app data directory");
                 let paths = AppState::paths_from_base(base);
                 AppState::init_with_paths(paths)
