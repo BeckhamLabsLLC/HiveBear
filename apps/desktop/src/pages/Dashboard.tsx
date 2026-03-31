@@ -156,9 +156,9 @@ export default function Dashboard() {
 
         {/* ── Zone 2: System (bento grid) ──────────────────────────────── */}
 
-        <div className="grid grid-cols-5 gap-4">
-          {/* Left: Resource gauges (3 cols) */}
-          <div className="col-span-3 space-y-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-5">
+          {/* Left: Resource gauges */}
+          <div className="space-y-4 sm:col-span-3">
             <ResourceGauge
               label="Memory Usage"
               used={profile.memory.total_bytes - profile.memory.available_bytes}
@@ -175,8 +175,8 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Right: Hardware summary (2 cols) */}
-          <Card className="col-span-2">
+          {/* Right: Hardware summary */}
+          <Card className="sm:col-span-2">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-muted">Hardware</h3>
             <div className="space-y-3">
               <HardwareRow icon={<Cpu size={14} />} label="CPU" value={profile.cpu.model_name} detail={`${profile.cpu.physical_cores}c / ${profile.cpu.logical_cores}t`} />
@@ -209,12 +209,12 @@ export default function Dashboard() {
                   className="group"
                   onClick={() => navigate("/models")}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{rec.model_name}</span>
                       <Badge variant="default">{rec.quantization}</Badge>
                     </div>
-                    <div className="flex items-center gap-4 text-xs">
+                    <div className="flex items-center gap-3 text-xs">
                       <span className="text-text-secondary">
                         {formatBytes(rec.estimated_memory_usage_bytes)}
                       </span>
@@ -228,7 +228,6 @@ export default function Dashboard() {
                       <span className="font-mono text-text-muted">
                         {(rec.confidence * 100).toFixed(0)}%
                       </span>
-                      <ArrowRight size={12} className="text-text-muted opacity-0 group-hover:opacity-100 interactive-hover" />
                     </div>
                   </div>
                 </Card>

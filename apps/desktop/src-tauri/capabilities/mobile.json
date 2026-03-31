@@ -1,0 +1,9 @@
+{
+  "identifier": "mobile",
+  "description": "HiveBear mobile permissions",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -42,8 +42,8 @@ export default function Settings() {
   return (
     <Surface>
       <div className="flex gap-8">
-        {/* Left mini-nav */}
-        <nav className="sticky top-6 flex w-32 shrink-0 flex-col gap-0.5 self-start">
+        {/* Left mini-nav (hidden on mobile) */}
+        <nav className="sticky top-6 hidden w-32 shrink-0 flex-col gap-0.5 self-start sm:flex">
           {SECTIONS.map((s) => (
             <button
               key={s}
@@ -61,7 +61,7 @@ export default function Settings() {
         </nav>
 
         {/* Settings content */}
-        <div className="min-w-0 flex-1 space-y-8">
+        <div className="min-w-0 flex-1 space-y-6 sm:space-y-8">
           <h1 className="text-xl font-semibold">Settings</h1>
 
           {error && <div className="rounded-[var(--radius-md)] border border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger">{error}</div>}
@@ -191,7 +191,7 @@ export default function Settings() {
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
             transition={{ type: "spring", damping: 25, stiffness: 400 }}
-            className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-[var(--radius-xl)] border border-border bg-surface-raised px-6 py-3 shadow-[var(--shadow-floating)]"
+            className="fixed bottom-[calc(56px+env(safe-area-inset-bottom)+12px)] sm:bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-[var(--radius-xl)] border border-border bg-surface-raised px-4 py-2.5 sm:px-6 sm:py-3 shadow-[var(--shadow-floating)]"
           >
             <span className="text-sm text-text-secondary">Unsaved changes</span>
             <Button variant="ghost" size="sm" onClick={handleDiscard}>Discard</Button>
@@ -221,10 +221,10 @@ function SettingsSection({ id, children, refs }: {
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <div>
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="shrink-0">
         <p className="text-sm text-text-primary">{label}</p>
-        {hint && <p className="text-xs text-text-muted">{hint}</p>}
+        {hint && <p className="text-xs text-text-muted max-w-[280px]">{hint}</p>}
       </div>
       {children}
     </div>

@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
+import BottomTabs from "./BottomTabs";
 import CommandPalette from "./CommandPalette";
+import { useIsMobile } from "../hooks/useDevice";
 
 export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const isMobile = useIsMobile();
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcuts (desktop only)
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (isMobile) return;
       const mod = e.metaKey || e.ctrlKey;
 
       if (mod && e.key === "k") {
@@ -26,13 +30,26 @@ export default function Layout() {
         setPaletteOpen(false);
       }
     },
-    [navigate],
+    [navigate, isMobile],
   );
 
   useEffect(() => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  if (isMobile) {
+    return (
+      <div className="flex h-screen flex-col">
+        <main className="flex-1 overflow-y-auto overscroll-contain pb-[calc(56px+env(safe-area-inset-bottom))]">
+          <div key={location.pathname} className="animate-[page-enter] min-h-0">
+            <Outlet />
+          </div>
+        </main>
+        <BottomTabs />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">

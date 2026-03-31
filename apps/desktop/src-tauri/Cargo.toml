@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "hivebear_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [dependencies]
 hivebear-core = { path = "../../../crates/hivebear-core" }
-hivebear-inference = { path = "../../../crates/hivebear-inference" }
+hivebear-inference = { path = "../../../crates/hivebear-inference", default-features = false }
 hivebear-persistence = { path = "../../../crates/hivebear-persistence" }
 hivebear-registry = { path = "../../../crates/hivebear-registry" }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hex = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
@@ -23,11 +27,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
-default = ["llamacpp"]
+default = ["llamacpp", "candle"]
 llamacpp = ["hivebear-inference/llamacpp"]
 llamacpp-metal = ["llamacpp", "hivebear-inference/llamacpp-metal"]
 llamacpp-cuda = ["llamacpp", "hivebear-inference/llamacpp-cuda"]
 llamacpp-vulkan = ["llamacpp", "hivebear-inference/llamacpp-vulkan"]
+candle = ["hivebear-inference/candle"]
+# Mobile: no local inference engines initially (Candle has ARM FP16 build issues).
+# Enables mesh participation, model browsing, and chat via remote inference.
+mobile = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

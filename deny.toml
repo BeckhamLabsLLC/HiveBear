@@ -5,29 +5,29 @@
 version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Ignore unmaintained transitive dependencies we can't control
-# (gtk-rs GTK3 bindings from Tauri, bincode, fxhash, etc.)
+# Reviewed 2026-03-31. Transitive deps we can't control (gtk-rs GTK3 from Tauri, bincode, fxhash).
+# Next review: 2026-06-30.
 ignore = [
-    "RUSTSEC-2024-0370",
-    "RUSTSEC-2024-0411",
-    "RUSTSEC-2024-0412",
-    "RUSTSEC-2024-0413",
-    "RUSTSEC-2024-0414",
-    "RUSTSEC-2024-0415",
-    "RUSTSEC-2024-0416",
-    "RUSTSEC-2024-0417",
-    "RUSTSEC-2024-0418",
-    "RUSTSEC-2024-0419",
-    "RUSTSEC-2024-0420",
-    "RUSTSEC-2024-0436",
-    "RUSTSEC-2025-0057",
-    "RUSTSEC-2025-0075",
-    "RUSTSEC-2025-0080",
-    "RUSTSEC-2025-0081",
-    "RUSTSEC-2025-0098",
-    "RUSTSEC-2025-0100",
-    "RUSTSEC-2025-0119",
-    "RUSTSEC-2025-0141",
+    "RUSTSEC-2024-0370",  # bincode: crafted input DoS. Not reachable via our API surface.
+    "RUSTSEC-2024-0411",  # gtk-rs: unmaintained GTK3 binding (Tauri transitive dep).
+    "RUSTSEC-2024-0412",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0413",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0414",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0415",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0416",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0417",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0418",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0419",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0420",  # gtk-rs: unmaintained (Tauri transitive dep).
+    "RUSTSEC-2024-0436",  # fxhash: unmaintained. Transitive dep, no direct usage.
+    "RUSTSEC-2025-0057",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0075",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0080",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0081",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0098",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0100",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0119",  # Transitive dep. No patch available.
+    "RUSTSEC-2025-0141",  # Transitive dep. No patch available.
 ]
 
 [licenses]

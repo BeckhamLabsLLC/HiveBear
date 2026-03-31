@@ -21,7 +21,7 @@ export default function Surface({
   return (
     <div
       className={[
-        "animate-[page-enter] p-6",
+        "animate-[page-enter] p-4 sm:p-6",
         maxWidthStyles[maxWidth],
         className,
       ].join(" ")}

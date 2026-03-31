@@ -2,6 +2,7 @@ use hivebear_core::{AppPaths, Config, HardwareProfile};
 use hivebear_inference::Orchestrator;
 use hivebear_persistence::ChatDatabase;
 use hivebear_registry::Registry;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Shared application state managed by Tauri.
@@ -18,7 +19,12 @@ pub struct AppState {
 
 impl AppState {
     pub fn init() -> Self {
-        let paths = AppPaths::new();
+        Self::init_with_paths(AppPaths::new())
+    }
+
+    /// Initialize with explicit paths — used on Android where the default
+    /// `ProjectDirs` paths point to read-only locations.
+    pub fn init_with_paths(paths: AppPaths) -> Self {
         paths
             .ensure_dirs()
             .expect("Failed to create app directories");
@@ -38,6 +44,19 @@ impl AppState {
             chat_db,
             paths,
             http_client: reqwest::Client::new(),
+        }
+    }
+
+    /// Create AppPaths from a base directory (e.g., Tauri's app_data_dir).
+    pub fn paths_from_base(base: PathBuf) -> AppPaths {
+        AppPaths {
+            config_dir: base.join("config"),
+            config_file: base.join("config").join("config.toml"),
+            data_dir: base.join("data"),
+            models_dir: base.join("data").join("models"),
+            db_file: base.join("data").join("hivebear.db"),
+            cache_dir: base.join("cache"),
+            benchmark_cache: base.join("cache").join("benchmark.json"),
         }
     }
 }

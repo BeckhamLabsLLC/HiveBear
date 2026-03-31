@@ -146,6 +146,26 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px rgba(224, 92, 49, 0.3);
 }
 
+/* ── Mobile ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* Larger touch targets on mobile */
+  button, a, [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Prevent text selection on interactive elements */
+  nav { -webkit-user-select: none; user-select: none; }
+
+  /* Disable hover effects (they cause sticky states on touch) */
+  .interactive-hover { transition: none; }
+}
+
+/* Safe area insets for notched devices */
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
 /* ── Scrollbar ───────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar { width: 6px; }

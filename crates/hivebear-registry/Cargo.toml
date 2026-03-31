@@ -13,7 +13,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", 
 futures = "0.3"
 
 # HTTP
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

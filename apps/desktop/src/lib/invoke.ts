@@ -136,3 +136,26 @@ export function migrateApiKeysToKeychain(): Promise<string[]> {
 export function isKeychainAvailable(): Promise<boolean> {
   return invoke("is_keychain_available");
 }
+
+// ── Device (Mobile) ──────────────────────────────────────────────
+
+export interface DeviceStatus {
+  is_charging: boolean;
+  battery_percent: number | null;
+  is_wifi: boolean;
+  is_mobile: boolean;
+  thermal_state: string;
+}
+
+export interface MeshEligibility {
+  eligible: boolean;
+  reasons: string[];
+}
+
+export function getDeviceStatus(): Promise<DeviceStatus> {
+  return invoke("get_device_status");
+}
+
+export function canContributeToMesh(): Promise<MeshEligibility> {
+  return invoke("can_contribute_to_mesh");
+}

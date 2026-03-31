@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"HiveBear default permissions","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"HiveBear default permissions","local":true,"windows":["main"],"permissions":["core:default"]},"mobile":{"identifier":"mobile","description":"HiveBear mobile permissions","local":true,"windows":["main"],"permissions":["core:default"],"platforms":["android","iOS"]}}
