@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="HiveBear" width="120" />
+  <img src="assets/logo-readme.png" alt="HiveBear" width="120" />
 </p>
 
 <h1 align="center">HiveBear</h1>
@@ -12,14 +12,14 @@
 <p align="center">
   <a href="https://github.com/BeckhamLabsLLC/HiveBear/actions"><img src="https://github.com/BeckhamLabsLLC/HiveBear/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/BeckhamLabsLLC/HiveBear/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://crates.io/crates/hivebear-cli"><img src="https://img.shields.io/crates/v/hivebear-cli.svg" alt="crates.io" /></a>
+  <a href="https://github.com/BeckhamLabsLLC/HiveBear/releases/latest"><img src="https://img.shields.io/github/v/release/BeckhamLabsLLC/HiveBear?label=release" alt="Latest Release" /></a>
 </p>
 
 ---
 
 ## What is HiveBear?
 
-Most tools for running local AI models make you figure out what your hardware can handle. HiveBear doesn't. It **profiles your device**, **recommends the best model**, and **runs it** -all in one command:
+Most tools for running local AI models make you figure out what your hardware can handle. HiveBear doesn't. It **profiles your device**, **recommends the best model**, and **runs it** — all in one command:
 
 ```bash
 hivebear quickstart
@@ -29,27 +29,27 @@ That's it. HiveBear detects your CPU, RAM, GPU, and storage, picks the optimal m
 
 ### Key Features
 
-- **Hardware-aware model selection** -Auto-detects your device and recommends models that actually fit. No more OOM crashes from blindly loading a 13B model on 8GB RAM.
-- **Multi-engine orchestration** -Automatically picks the best inference engine (llama.cpp, Candle, or more) based on your hardware and the model format.
-- **P2P mesh distributed inference** -Pool devices together over the internet to run models too large for any single machine. Your laptop + your desktop = one big inference cluster.
-- **OpenAI-compatible API** -Drop-in replacement for OpenAI's API. Point your existing tools at `localhost:8080` and use local models with zero code changes.
-- **Model registry** -Search, download, and manage models from HuggingFace with one command. Resumable downloads, integrity verification, format conversion.
-- **Native desktop app** -Full-featured GUI with hardware dashboard, model browser, chat interface, and benchmark tools.
-- **Cross-platform** -Linux, macOS, Windows, ARM (Raspberry Pi), and browser (WASM) support.
+- **Hardware-aware model selection** — Auto-detects your device and recommends models that actually fit. No more OOM crashes from blindly loading a 13B model on 8GB RAM.
+- **Multi-engine orchestration** — Automatically picks the best inference engine (llama.cpp, Candle, or more) based on your hardware and the model format.
+- **P2P mesh distributed inference** — Pool devices together over the internet to run models too large for any single machine. Your laptop + your desktop = one big inference cluster.
+- **OpenAI-compatible API** — Drop-in replacement for OpenAI's API. Point your existing tools at `localhost:8080` and use local models with zero code changes.
+- **Model registry** — Search, download, and manage models from HuggingFace with one command. Resumable downloads, integrity verification, format conversion.
+- **Native desktop app** — Full-featured GUI with hardware dashboard, model browser, chat interface, and benchmark tools.
+- **Cross-platform** — Linux, macOS, Windows, ARM (Raspberry Pi), and browser (WASM) support.
 
-## How It Compares
+## Feature Overview
 
 | Feature | HiveBear | Ollama | LM Studio | Jan.ai |
 |---------|----------|--------|-----------|--------|
-| Auto hardware profiling | **Yes** | No | No | No |
-| Smart model recommendation | **Yes** | No | No | No |
-| Multi-engine (llama.cpp + Candle + more) | **Yes** | llama.cpp only | llama.cpp only | llama.cpp only |
-| P2P distributed inference | **Yes** | No | No | No |
+| Auto hardware profiling | Yes | — | — | — |
+| Smart model recommendation | Yes | — | — | — |
+| Multi-engine (llama.cpp + Candle + more) | Yes | llama.cpp | llama.cpp | llama.cpp |
+| P2P distributed inference | Yes | — | — | — |
 | OpenAI-compatible API | Yes | Yes | Yes | Yes |
-| Native GUI | Yes | No | Yes | Yes |
-| Browser inference (WASM) | **Yes** | No | No | No |
-| Open source | MIT | MIT | Proprietary | AGPL |
-| Written in | Rust | Go | C++/Electron | TypeScript |
+| Native GUI | Yes | — | Yes | Yes |
+| Browser inference (WASM) | Yes | — | — | — |
+| License | MIT | MIT | Proprietary | AGPL |
+| Language | Rust | Go | C++/Electron | TypeScript |
 
 ## Quick Start
 
@@ -79,7 +79,7 @@ cd HiveBear && cargo build --release
 ### Run
 
 ```bash
-# The magic command -profiles, recommends, installs, and chats
+# The magic command — profiles, recommends, installs, and chats
 hivebear quickstart
 
 # Or step by step:
