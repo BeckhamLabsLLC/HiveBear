@@ -5,7 +5,8 @@
 <h1 align="center">HiveBear</h1>
 
 <p align="center">
-  <strong>Run AI models on the hardware you already own.</strong>
+  <strong>The world's largest peer-to-peer AI network.</strong><br>
+  Every device is a node. Every node makes the network smarter.
 </p>
 
 <p align="center">
@@ -16,33 +17,58 @@
 
 ---
 
-## The Problem
+## Why HiveBear Exists
 
-Running open-source AI models locally is harder than it should be. You have to figure out which models fit your hardware, which quantizations to use, which inference engine works with your GPU, and how to configure it all. Get it wrong and you're staring at an out-of-memory crash or waiting 30 seconds per token.
+There are billions of devices sitting idle right now — laptops, desktops, gaming PCs, workstations, even Raspberry Pis — with CPUs and GPUs doing nothing. Meanwhile, running AI costs a fortune in cloud compute, and access is controlled by a handful of companies.
 
-Cloud APIs solve the complexity problem but create new ones: costs scale with usage, your data leaves your machine, and you're locked into someone else's model lineup.
+HiveBear connects these idle devices into a single distributed AI network. When you join the mesh, your hardware contributes to a collective compute pool. When you need to run a model that's too large for your machine, the mesh splits it across multiple devices automatically. No central server. No cloud bill. No data leaving the network.
 
-## What HiveBear Does
+The goal is simple: **build a global P2P mesh where anyone can run any AI model, regardless of what hardware they own, by pooling compute with everyone else.**
 
-HiveBear is a local AI runtime that automatically matches models to your hardware. One command profiles your device, picks the best model and quantization for your specific CPU/RAM/GPU, downloads it, and starts a chat:
+## How It Works
 
-```bash
-hivebear quickstart
+```
+   You (8GB laptop)          Friend (16GB desktop)        Mesh peer (GPU workstation)
+        |                           |                              |
+        +------------- QUIC/TLS encrypted mesh ---------------+
+                                    |
+                          HiveBear Mesh Network
+                                    |
+                     Distributed inference: 70B model
+                     split across all three devices
 ```
 
-It works on everything from a Raspberry Pi to a multi-GPU workstation, and when a model is too large for one device, HiveBear can distribute inference across multiple machines over the network.
+1. **Install HiveBear** on any device
+2. **Join the mesh** — your device auto-profiles its hardware and advertises its capabilities
+3. **Run any model** — if it fits locally, it runs locally. If it doesn't, HiveBear distributes the model layers across mesh peers automatically
+4. **Contribute idle compute** — when you're not using your device, it helps others run their models
 
-### Core Capabilities
+```bash
+# Join the global mesh
+hivebear mesh start
 
-**Automatic hardware profiling and model selection.** HiveBear benchmarks your CPU, RAM, GPU (CUDA/Metal/Vulkan), and storage, then recommends models that will actually run well. It picks the right quantization level (Q4, Q5, Q8, F16) based on your available memory and compute, so you get the best quality your hardware can deliver without manual tuning.
+# Run a 70B model you couldn't run alone
+hivebear mesh run llama-3.1-70b --prompt "Explain quantum computing"
 
-**Multi-engine inference.** Instead of being locked to one backend, HiveBear selects the best inference engine for the job. llama.cpp for GGUF models with GPU offloading, Candle for pure-Rust execution when native compilation matters. The engine selection is automatic based on model format and hardware.
+# See who's connected
+hivebear mesh status
+```
 
-**Ollama-compatible API server.** `hivebear serve` is a drop-in replacement for `ollama serve`. Point your existing tools, IDE extensions, and scripts at `localhost:11434` and they work without code changes. It also exposes a full OpenAI-compatible API at the same endpoint.
+The mesh uses QUIC transport with TLS encryption. Inference is distributed using pipeline parallelism — each device holds a subset of model layers and forwards activations to the next peer. No raw model weights or user prompts are exposed to other nodes.
 
-**P2P distributed inference.** Connect multiple devices into a mesh network over QUIC/TLS. HiveBear splits model layers across machines so you can run a 70B model on three 8GB laptops. Each device contributes what it can. No central server required.
+## It Also Works Standalone
 
-**Cross-platform.** Native binaries for Linux, macOS, and Windows. ARM support for Raspberry Pi and Apple Silicon. A Tauri desktop app with hardware dashboard and chat UI. A WASM build for browser-based inference. Android APK.
+Even without the mesh, HiveBear is a complete local AI runtime. It profiles your hardware, picks the best model and quantization automatically, and runs it:
+
+```bash
+# One command: profile hardware, pick best model, download, chat
+hivebear quickstart
+
+# Or use it as an Ollama-compatible API server
+hivebear serve
+```
+
+The `serve` command is a drop-in replacement for `ollama serve` — same port (11434), same API. Your existing tools, IDE extensions (Continue, Cody), and scripts work without changes. When a model is too large for your hardware, it automatically overflows to the mesh.
 
 ## Install
 
@@ -67,108 +93,64 @@ docker run -it --rm --gpus all -p 11434:11434 ghcr.io/beckhamlabsllc/hivebear:la
 cargo install --git https://github.com/BeckhamLabsLLC/HiveBear hivebear-cli
 ```
 
-## Usage
+## What Your Hardware Can Run
 
-```bash
-# Auto-detect hardware, pick best model, download, and chat
-hivebear quickstart
+HiveBear auto-detects and adapts to whatever you have:
 
-# Step by step
-hivebear profile              # What can my hardware handle?
-hivebear recommend            # What models should I run?
-hivebear install llama-3.1-8b # Download a model
-hivebear run llama-3.1-8b     # Chat with it
+| Device | RAM | Solo | With Mesh |
+|--------|-----|------|-----------|
+| Raspberry Pi 5 | 8 GB | TinyLlama 1.1B, Phi-2 2.7B | Contribute layers to larger models |
+| Old laptop | 8 GB | Llama 3.1 8B (Q4), Mistral 7B | Help run 13B-30B models |
+| Gaming PC | 16 GB | Llama 3.1 8B (Q8), CodeLlama 13B | Help run 70B+ models |
+| Workstation | 32+ GB | Llama 3.1 70B (Q4), Mixtral 8x7B | Run anything |
 
-# Persistent API server (Ollama + OpenAI compatible)
-hivebear serve
-
-# Search and manage models
-hivebear search "code assistant"
-hivebear list
-hivebear remove llama-3.1-8b
-
-# Distributed inference across devices
-hivebear mesh start --port 7878
-hivebear mesh run llama-3.1-70b --prompt "Explain quantum computing"
-```
-
-### API Server
-
-`hivebear serve` starts an API server compatible with both Ollama and OpenAI clients:
-
-```bash
-hivebear serve
-
-# Works with any OpenAI-compatible client
-curl http://localhost:11434/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama-3.1-8b",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
-
-This means HiveBear works with VS Code extensions (Continue, Cody), JetBrains AI, Open WebUI, and anything else that speaks the OpenAI or Ollama protocol.
-
-### Desktop App
-
-Download from [Releases](https://github.com/BeckhamLabsLLC/HiveBear/releases) or build from source:
-
-```bash
-cd apps/desktop && npm install && cargo tauri dev
-```
-
-## Hardware Support
-
-| Device | RAM | What Runs Well |
-|--------|-----|----------------|
-| Raspberry Pi 5 | 8 GB | TinyLlama 1.1B, Phi-2 2.7B |
-| Older laptop | 8 GB | Llama 3.1 8B (Q4), Mistral 7B (Q4) |
-| Gaming PC | 16 GB | Llama 3.1 8B (Q8), CodeLlama 13B (Q4) |
-| Workstation | 32+ GB | Llama 3.1 70B (Q4), Mixtral 8x7B |
-| Multi-device mesh | Any | Models too large for any single machine |
-
-GPU acceleration is automatic when available (CUDA, Metal, Vulkan, WebGPU).
+GPU acceleration is automatic (CUDA, Metal, Vulkan, WebGPU).
 
 ## Architecture
 
-Rust workspace with 8 crates:
+Rust workspace, 8 crates:
 
 ```
-hivebear-core          Hardware profiling, model recommendations, config
-hivebear-inference     Multi-engine inference orchestrator (llama.cpp, Candle)
-hivebear-registry      Model search, download, conversion, storage
-hivebear-mesh          P2P distributed inference over QUIC
+hivebear-core          Hardware profiling, model recommendations
+hivebear-inference     Multi-engine inference (llama.cpp, Candle)
+hivebear-mesh          P2P distributed inference over QUIC/TLS
+hivebear-registry      Model search, download, conversion (HuggingFace)
 hivebear-persistence   Conversation history (SQLite)
 hivebear-cli           CLI + API server (Ollama + OpenAI compatible)
 hivebear-web           WASM bridge for browser inference
-apps/desktop           Tauri desktop app (Rust backend + React frontend)
+apps/desktop           Tauri desktop app (Rust + React)
 ```
 
-## Feature Comparison
+## CLI Reference
 
-| | HiveBear | Ollama | LM Studio | Jan.ai |
-|--|----------|--------|-----------|--------|
-| Auto hardware profiling | Yes | -- | -- | -- |
-| Smart model recommendation | Yes | -- | -- | -- |
-| Multi-engine (llama.cpp + Candle) | Yes | llama.cpp | llama.cpp | llama.cpp |
-| P2P distributed inference | Yes | -- | -- | -- |
-| Ollama-compatible API | Yes | Yes | -- | -- |
-| OpenAI-compatible API | Yes | Yes | Yes | Yes |
-| Native desktop app | Yes | -- | Yes | Yes |
-| Browser inference (WASM) | Yes | -- | -- | -- |
-| Mobile (Android) | Yes | -- | -- | -- |
-| License | MIT | MIT | Proprietary | AGPL |
+```
+hivebear quickstart                    Profile -> recommend -> install -> chat
+hivebear serve                         Start Ollama + OpenAI compatible API server
+hivebear profile                       Show hardware capabilities
+hivebear recommend                     Get model recommendations for your hardware
+
+hivebear mesh start [--port 7878]      Join the P2P mesh network
+hivebear mesh status                   Show connected peers and network capacity
+hivebear mesh run <model>              Distributed inference across the mesh
+hivebear mesh stop                     Leave the mesh
+
+hivebear search <query>                Search models on HuggingFace
+hivebear install <model>               Download a model
+hivebear run <model>                   Local inference (chat, --api, or --prompt)
+hivebear list / remove / storage       Manage installed models
+```
+
+## Platforms
+
+- **CLI**: Linux, macOS, Windows, ARM (Raspberry Pi, Apple Silicon)
+- **Desktop app**: Linux (.deb, .AppImage), macOS (.dmg), Windows (.msi, .exe)
+- **Mobile**: Android (.apk)
+- **Browser**: WASM + WebGPU
+- **Docker**: CPU and CUDA images
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-Good first issues:
-- Add GPU bandwidth entries to the [hardware database](crates/hivebear-core/src/recommender/scoring.rs)
-- Add models to the [recommendation database](crates/hivebear-core/src/recommender/model_db.rs)
-- Improve CLI output formatting
+See [CONTRIBUTING.md](CONTRIBUTING.md). The most impactful contributions right now are around the mesh networking layer and hardware profiling coverage.
 
 ## License
 
