@@ -681,8 +681,8 @@ async fn ollama_ps(State(state): State<Arc<AppState>>) -> Json<OllamaPsResponse>
     let models = state.models.read().await;
 
     let ps_models: Vec<OllamaPsModel> = models
-        .iter()
-        .map(|(name, _handle)| {
+        .keys()
+        .map(|name| {
             OllamaPsModel {
                 name: name.clone(),
                 model: name.clone(),
