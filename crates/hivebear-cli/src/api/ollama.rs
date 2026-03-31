@@ -195,7 +195,7 @@ async fn ollama_chat(
         .into_iter()
         .map(|m| match m.role.as_str() {
             "system" => ChatMessage::System(m.content),
-            "assistant" => ChatMessage::Assistant(m.content),
+            "assistant" => ChatMessage::assistant(m.content),
             _ => ChatMessage::user_text(&m.content),
         })
         .collect();

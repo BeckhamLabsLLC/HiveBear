@@ -1333,7 +1333,7 @@ async fn cmd_run(
                 }
             }
 
-            history.push(ChatMessage::Assistant(response_text));
+            history.push(ChatMessage::assistant(response_text));
         }
     }
 
@@ -1874,7 +1874,7 @@ async fn cmd_quickstart(temperature: f32, context_length: u32) {
             }
         }
 
-        history.push(ChatMessage::Assistant(response_text));
+        history.push(ChatMessage::assistant(response_text));
 
         if first_reply {
             first_reply = false;
@@ -2287,7 +2287,7 @@ async fn cmd_mesh_run(
                         println!();
 
                         if !response_text.is_empty() {
-                            history.push(ChatMessage::Assistant(response_text));
+                            history.push(ChatMessage::assistant(response_text));
                         }
                     }
                     return;
@@ -2483,7 +2483,7 @@ async fn cmd_mesh_run(
                     println!();
 
                     if !response_text.is_empty() {
-                        history.push(ChatMessage::Assistant(response_text));
+                        history.push(ChatMessage::assistant(response_text));
                     }
                 }
                 Err(e) => {

@@ -100,9 +100,10 @@ fn render_llama3(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String {
                     "<|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|>"
                 ));
             }
-            ChatMessage::Assistant(text) => {
+            ChatMessage::Assistant { content, .. } => {
+                let content_str = content.as_deref().unwrap_or("");
                 prompt.push_str(&format!(
-                    "<|start_header_id|>assistant<|end_header_id|>\n\n{text}<|eot_id|>"
+                    "<|start_header_id|>assistant<|end_header_id|>\n\n{content_str}<|eot_id|>"
                 ));
             }
             ChatMessage::ToolResult { content, .. } => {
@@ -144,8 +145,9 @@ fn render_chatml(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String {
                 let text = msg.user_text_content().unwrap_or_default();
                 prompt.push_str(&format!("<|im_start|>user\n{text}<|im_end|>\n"));
             }
-            ChatMessage::Assistant(text) => {
-                prompt.push_str(&format!("<|im_start|>assistant\n{text}<|im_end|>\n"));
+            ChatMessage::Assistant { content, .. } => {
+                let content_str = content.as_deref().unwrap_or("");
+                prompt.push_str(&format!("<|im_start|>assistant\n{content_str}<|im_end|>\n"));
             }
             ChatMessage::ToolResult { content, .. } => {
                 prompt.push_str(&format!("<|im_start|>tool\n{content}<|im_end|>\n"));
@@ -182,8 +184,9 @@ fn render_gemma(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String {
                 let text = msg.user_text_content().unwrap_or_default();
                 prompt.push_str(&format!("<start_of_turn>user\n{text}<end_of_turn>\n"));
             }
-            ChatMessage::Assistant(text) => {
-                prompt.push_str(&format!("<start_of_turn>model\n{text}<end_of_turn>\n"));
+            ChatMessage::Assistant { content, .. } => {
+                let content_str = content.as_deref().unwrap_or("");
+                prompt.push_str(&format!("<start_of_turn>model\n{content_str}<end_of_turn>\n"));
             }
             ChatMessage::ToolResult { content, .. } => {
                 prompt.push_str(&format!(
@@ -212,8 +215,9 @@ fn render_phi3(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String {
                 let text = msg.user_text_content().unwrap_or_default();
                 prompt.push_str(&format!("<|user|>\n{text}<|end|>\n"));
             }
-            ChatMessage::Assistant(text) => {
-                prompt.push_str(&format!("<|assistant|>\n{text}<|end|>\n"));
+            ChatMessage::Assistant { content, .. } => {
+                let content_str = content.as_deref().unwrap_or("");
+                prompt.push_str(&format!("<|assistant|>\n{content_str}<|end|>\n"));
             }
             ChatMessage::ToolResult { content, .. } => {
                 prompt.push_str(&format!("<|user|>\n[Tool result: {content}]<|end|>\n"));
@@ -256,8 +260,9 @@ fn render_mistral(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String 
                     prompt.push_str(&format!("[INST] {text} [/INST]"));
                 }
             }
-            ChatMessage::Assistant(text) => {
-                prompt.push_str(&format!(" {text}</s>"));
+            ChatMessage::Assistant { content, .. } => {
+                let content_str = content.as_deref().unwrap_or("");
+                prompt.push_str(&format!(" {content_str}</s>"));
             }
             ChatMessage::ToolResult { content, .. } => {
                 prompt.push_str(&format!("[INST] [Tool result: {content}] [/INST]"));
@@ -285,8 +290,9 @@ fn render_generic(messages: &[ChatMessage], tools: &[ToolDefinition]) -> String 
                 let text = msg.user_text_content().unwrap_or_default();
                 prompt.push_str(&format!("<|user|>\n{text}\n"));
             }
-            ChatMessage::Assistant(text) => {
-                prompt.push_str(&format!("<|assistant|>\n{text}\n"));
+            ChatMessage::Assistant { content, .. } => {
+                let content_str = content.as_deref().unwrap_or("");
+                prompt.push_str(&format!("<|assistant|>\n{content_str}\n"));
             }
             ChatMessage::ToolResult { content, .. } => {
                 prompt.push_str(&format!("<|tool|>\n{content}\n"));

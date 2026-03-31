@@ -93,10 +93,30 @@ impl CloudProtocol for AnthropicProtocol {
                         "content": content,
                     }))
                 }
-                ChatMessage::Assistant(text) => Some(serde_json::json!({
-                    "role": "assistant",
-                    "content": text,
-                })),
+                ChatMessage::Assistant { content, tool_calls } => {
+                    let mut blocks = Vec::new();
+                    if let Some(text) = content {
+                        if !text.is_empty() {
+                            blocks.push(serde_json::json!({ "type": "text", "text": text }));
+                        }
+                    }
+                    for tc in tool_calls {
+                        blocks.push(serde_json::json!({
+                            "type": "tool_use",
+                            "id": tc.call_id,
+                            "name": tc.tool_name,
+                            "input": tc.arguments,
+                        }));
+                    }
+                    if blocks.is_empty() {
+                        // Anthropic requires non-empty content
+                        blocks.push(serde_json::json!({ "type": "text", "text": "" }));
+                    }
+                    Some(serde_json::json!({
+                        "role": "assistant",
+                        "content": blocks,
+                    }))
+                }
                 ChatMessage::ToolResult {
                     tool_call_id,
                     content,
@@ -459,7 +479,10 @@ mod tests {
         let req = GenerateRequest {
             messages: vec![
                 ChatMessage::user_text("What is the weather?"),
-                ChatMessage::Assistant("Let me check.".into()),
+                ChatMessage::Assistant {
+                    content: Some("Let me check.".into()),
+                    tool_calls: vec![],
+                },
                 ChatMessage::ToolResult {
                     tool_call_id: "toolu_123".into(),
                     content: "72F and sunny".into(),

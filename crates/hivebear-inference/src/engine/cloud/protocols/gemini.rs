@@ -53,10 +53,29 @@ impl GeminiProtocol {
                     "parts": gemini_parts
                 }))
             }
-            ChatMessage::Assistant(text) => Some(serde_json::json!({
-                "role": "model",
-                "parts": [{ "text": text }]
-            })),
+            ChatMessage::Assistant { content, tool_calls } => {
+                let mut parts = Vec::new();
+                if let Some(text) = content {
+                    if !text.is_empty() {
+                        parts.push(serde_json::json!({ "text": text }));
+                    }
+                }
+                for tc in tool_calls {
+                    parts.push(serde_json::json!({
+                        "functionCall": {
+                            "name": tc.tool_name,
+                            "args": tc.arguments,
+                        }
+                    }));
+                }
+                if parts.is_empty() {
+                    parts.push(serde_json::json!({ "text": "" }));
+                }
+                Some(serde_json::json!({
+                    "role": "model",
+                    "parts": parts,
+                }))
+            }
             ChatMessage::ToolResult { content, .. } => Some(serde_json::json!({
                 "role": "user",
                 "parts": [{ "text": content }]

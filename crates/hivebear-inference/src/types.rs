@@ -125,7 +125,11 @@ pub enum ChatMessage {
     #[serde(rename = "user")]
     User(Vec<ContentPart>),
     #[serde(rename = "assistant")]
-    Assistant(String),
+    Assistant {
+        content: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_calls: Vec<ToolCallResponse>,
+    },
     #[serde(rename = "tool")]
     ToolResult {
         tool_call_id: String,
@@ -134,6 +138,25 @@ pub enum ChatMessage {
 }
 
 impl ChatMessage {
+    /// Create a text-only assistant message (convenience for the common case).
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self::Assistant {
+            content: Some(text.into()),
+            tool_calls: vec![],
+        }
+    }
+
+    /// Create an assistant message with tool calls.
+    pub fn assistant_with_tool_calls(
+        content: Option<String>,
+        tool_calls: Vec<ToolCallResponse>,
+    ) -> Self {
+        Self::Assistant {
+            content,
+            tool_calls,
+        }
+    }
+
     /// Create a text-only user message (convenience for the common case).
     pub fn user_text(text: &str) -> Self {
         Self::User(vec![ContentPart::Text {

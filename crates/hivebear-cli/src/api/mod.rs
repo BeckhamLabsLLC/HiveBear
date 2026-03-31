@@ -16,7 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 use hivebear_core::config::paths::AppPaths;
 use hivebear_core::types::HardwareProfile;
 use hivebear_core::Config;
-use hivebear_inference::{ChatMessage, GenerateRequest, LoadConfig, ModelHandle, Orchestrator, SamplingParams};
+use hivebear_inference::{ChatMessage, ContentPart, GenerateRequest, LoadConfig, ModelHandle, Orchestrator, SamplingParams};
 use hivebear_registry::Registry;
 
 /// Shared application state for the API server.
@@ -50,7 +50,21 @@ impl AppState {
             }
         }
 
-        // Try to resolve and load
+        // Check if it's a cloud model (e.g., "openai/gpt-4o", "anthropic/claude-sonnet-4-20250514")
+        #[cfg(feature = "cloud")]
+        if hivebear_inference::engine::cloud::registry::is_cloud_model(model_name) {
+            return match self.orchestrator.load_cloud(model_name).await {
+                Ok(handle) => {
+                    let mut models = self.models.write().await;
+                    models.insert(model_name.to_string(), handle.clone());
+                    tracing::info!("Cloud model '{model_name}' loaded successfully");
+                    Ok(handle)
+                }
+                Err(e) => Err(format!("Cloud model '{}': {}", model_name, e)),
+            };
+        }
+
+        // Try to resolve and load via local registry
         let Some(ref registry) = self.registry else {
             return Err(format!(
                 "Model '{}' is not loaded and no registry is available for on-demand loading",
@@ -341,6 +355,21 @@ struct ChatCompletionRequest {
     stream: bool,
     #[serde(default)]
     top_p: Option<f32>,
+    // Tool calling (critical for Cursor)
+    #[serde(default)]
+    tools: Vec<ApiToolDefinition>,
+    #[serde(default)]
+    tool_choice: Option<serde_json::Value>,
+    // Structured output
+    #[serde(default)]
+    response_format: Option<ApiResponseFormat>,
+    // Additional sampling parameters
+    #[serde(default)]
+    stop: Option<StopSequences>,
+    #[serde(default)]
+    frequency_penalty: Option<f32>,
+    #[serde(default)]
+    presence_penalty: Option<f32>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -350,11 +379,90 @@ fn default_temperature() -> f32 {
     0.7
 }
 
+// ── Message types (multimodal + tool calls) ─────────────────────────
+
 #[derive(Deserialize)]
 struct ApiMessage {
     role: String,
-    content: String,
+    #[serde(default)]
+    content: Option<ApiMessageContent>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ApiToolCall>>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
 }
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ApiMessageContent {
+    Text(String),
+    Parts(Vec<ApiContentPart>),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum ApiContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ApiImageUrl },
+}
+
+#[derive(Deserialize)]
+struct ApiImageUrl {
+    url: String,
+}
+
+// ── Tool calling types ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ApiToolDefinition {
+    #[serde(rename = "type")]
+    _type: String,
+    function: ApiFunctionDef,
+}
+
+#[derive(Deserialize)]
+struct ApiFunctionDef {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    parameters: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ApiToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    _type: String,
+    function: ApiToolCallFunction,
+}
+
+#[derive(Deserialize)]
+struct ApiToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+// ── Response format / structured output ─────────────────────────────
+
+#[derive(Deserialize)]
+struct ApiResponseFormat {
+    #[serde(rename = "type")]
+    _type: String,
+    #[serde(default)]
+    json_schema: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StopSequences {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+// ── Response types ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct ChatCompletionResponse {
@@ -362,6 +470,8 @@ struct ChatCompletionResponse {
     object: String,
     model: String,
     choices: Vec<Choice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Usage>,
 }
 
 #[derive(Serialize)]
@@ -374,7 +484,31 @@ struct Choice {
 #[derive(Serialize)]
 struct ChoiceMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ApiToolCallResponse>>,
+}
+
+#[derive(Serialize)]
+struct ApiToolCallResponse {
+    id: String,
+    #[serde(rename = "type")]
+    _type: String,
+    function: ApiToolCallFunctionResponse,
+}
+
+#[derive(Serialize)]
+struct ApiToolCallFunctionResponse {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize, Clone)]
+struct Usage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
 }
 
 #[derive(Serialize)]
@@ -383,6 +517,8 @@ struct StreamChunk {
     object: String,
     model: String,
     choices: Vec<StreamChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Usage>,
 }
 
 #[derive(Serialize)]
@@ -413,6 +549,131 @@ struct ModelEntry {
     owned_by: String,
 }
 
+// ── Conversion helpers ──────────────────────────────────────────────
+
+fn convert_api_messages(messages: Vec<ApiMessage>) -> Vec<ChatMessage> {
+    use hivebear_inference::{ToolCallResponse};
+
+    messages
+        .into_iter()
+        .map(|m| match m.role.as_str() {
+            "system" => {
+                let text = match m.content {
+                    Some(ApiMessageContent::Text(s)) => s,
+                    _ => String::new(),
+                };
+                ChatMessage::System(text)
+            }
+            "assistant" => {
+                let content = match m.content {
+                    Some(ApiMessageContent::Text(s)) => Some(s),
+                    _ => None,
+                };
+                let tool_calls = m
+                    .tool_calls
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|tc| ToolCallResponse {
+                        tool_name: tc.function.name,
+                        arguments: serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::Value::Null),
+                        call_id: tc.id,
+                    })
+                    .collect();
+                ChatMessage::assistant_with_tool_calls(content, tool_calls)
+            }
+            "tool" => ChatMessage::ToolResult {
+                tool_call_id: m.tool_call_id.unwrap_or_default(),
+                content: match m.content {
+                    Some(ApiMessageContent::Text(s)) => s,
+                    _ => String::new(),
+                },
+            },
+            _ => {
+                // user (or unknown role)
+                match m.content {
+                    Some(ApiMessageContent::Parts(parts)) => {
+                        let content_parts: Vec<ContentPart> = parts
+                            .into_iter()
+                            .map(|p| match p {
+                                ApiContentPart::Text { text } => ContentPart::Text { text },
+                                ApiContentPart::ImageUrl { image_url } => {
+                                    ContentPart::ImageUrl { url: image_url.url }
+                                }
+                            })
+                            .collect();
+                        ChatMessage::User(content_parts)
+                    }
+                    Some(ApiMessageContent::Text(s)) => ChatMessage::user_text(&s),
+                    None => ChatMessage::user_text(""),
+                }
+            }
+        })
+        .collect()
+}
+
+fn convert_tools(tools: &[ApiToolDefinition]) -> Vec<hivebear_inference::ToolDefinition> {
+    tools
+        .iter()
+        .map(|t| hivebear_inference::ToolDefinition {
+            name: t.function.name.clone(),
+            description: t.function.description.clone().unwrap_or_default(),
+            input_schema: t
+                .function
+                .parameters
+                .clone()
+                .unwrap_or(serde_json::json!({})),
+        })
+        .collect()
+}
+
+fn convert_tool_choice(
+    choice: &Option<serde_json::Value>,
+) -> hivebear_inference::ToolChoice {
+    use hivebear_inference::ToolChoice;
+    match choice {
+        None => ToolChoice::Auto,
+        Some(v) => {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "none" => ToolChoice::None,
+                    "required" => ToolChoice::Required,
+                    _ => ToolChoice::Auto,
+                }
+            } else if let Some(name) = v
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                ToolChoice::Specific(name.to_string())
+            } else {
+                ToolChoice::Auto
+            }
+        }
+    }
+}
+
+fn convert_stop(stop: &Option<StopSequences>) -> Vec<String> {
+    match stop {
+        None => vec![],
+        Some(StopSequences::Single(s)) => vec![s.clone()],
+        Some(StopSequences::Multiple(v)) => v.clone(),
+    }
+}
+
+fn convert_tool_call_response(
+    tc: hivebear_inference::ToolCallResponse,
+) -> ApiToolCallResponse {
+    ApiToolCallResponse {
+        id: tc.call_id,
+        _type: "function".into(),
+        function: ApiToolCallFunctionResponse {
+            name: tc.tool_name,
+            arguments: tc.arguments.to_string(),
+        },
+    }
+}
+
 // ── Route handlers ────────────────────────────────────────────────────
 
 async fn health() -> &'static str {
@@ -421,14 +682,39 @@ async fn health() -> &'static str {
 
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListResponse> {
     let models = state.models.read().await;
-    let data: Vec<ModelEntry> = models
+    let mut data: Vec<ModelEntry> = models
         .keys()
         .map(|name| ModelEntry {
             id: name.clone(),
             object: "model".into(),
-            owned_by: "hivebear".into(),
+            owned_by: "hivebear-local".into(),
         })
         .collect();
+
+    // List cloud providers that have API keys configured
+    #[cfg(feature = "cloud")]
+    {
+        use hivebear_inference::engine::cloud::registry::BUILTIN_PROVIDERS;
+
+        for provider in BUILTIN_PROVIDERS {
+            if !provider.requires_api_key
+                || std::env::var(provider.env_var)
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false)
+            {
+                // Skip providers already listed as loaded models
+                let prefix = provider.prefix;
+                let already_listed = data.iter().any(|m| m.id.starts_with(prefix));
+                if !already_listed {
+                    data.push(ModelEntry {
+                        id: format!("{}/*", prefix),
+                        object: "model".into(),
+                        owned_by: provider.display_name.to_string(),
+                    });
+                }
+            }
+        }
+    }
 
     Json(ModelListResponse {
         object: "list".into(),
@@ -453,15 +739,7 @@ async fn chat_completions(
         }
     };
 
-    let messages: Vec<ChatMessage> = req
-        .messages
-        .into_iter()
-        .map(|m| match m.role.as_str() {
-            "system" => ChatMessage::System(m.content),
-            "assistant" => ChatMessage::Assistant(m.content),
-            _ => ChatMessage::user_text(&m.content),
-        })
-        .collect();
+    let messages = convert_api_messages(req.messages);
 
     let gen_req = GenerateRequest {
         messages,
@@ -469,8 +747,16 @@ async fn chat_completions(
         sampling: SamplingParams {
             temperature: req.temperature,
             top_p: req.top_p.unwrap_or(0.9),
+            frequency_penalty: req.frequency_penalty.unwrap_or(0.0),
+            presence_penalty: req.presence_penalty.unwrap_or(0.0),
             ..Default::default()
         },
+        tools: convert_tools(&req.tools),
+        tool_choice: convert_tool_choice(&req.tool_choice),
+        stop_sequences: convert_stop(&req.stop),
+        output_schema: req
+            .response_format
+            .and_then(|rf| rf.json_schema),
         model_name: Some(model_name.clone()),
         ..Default::default()
     };
@@ -490,9 +776,33 @@ async fn non_stream_response(
 ) -> axum::response::Response {
     match state.orchestrator.generate(&handle, &req).await {
         Ok(response) => {
-            let text = match response {
-                hivebear_inference::GenerateResponse::Text(t) => t,
-                _ => "".into(),
+            let (content, tool_calls, finish_reason) = match response {
+                hivebear_inference::GenerateResponse::Text(t) => {
+                    (Some(t), None, "stop")
+                }
+                hivebear_inference::GenerateResponse::ToolCall(tc) => {
+                    (None, Some(vec![convert_tool_call_response(tc)]), "tool_calls")
+                }
+                hivebear_inference::GenerateResponse::Mixed(blocks) => {
+                    let mut text_parts = Vec::new();
+                    let mut calls = Vec::new();
+                    for block in blocks {
+                        match block {
+                            hivebear_inference::ContentBlock::Text(t) => text_parts.push(t),
+                            hivebear_inference::ContentBlock::ToolCall(tc) => {
+                                calls.push(convert_tool_call_response(tc))
+                            }
+                        }
+                    }
+                    let text = if text_parts.is_empty() {
+                        None
+                    } else {
+                        Some(text_parts.join(""))
+                    };
+                    let tool_calls = if calls.is_empty() { None } else { Some(calls) };
+                    let reason = if tool_calls.is_some() { "tool_calls" } else { "stop" };
+                    (text, tool_calls, reason)
+                }
             };
 
             let resp = ChatCompletionResponse {
@@ -503,10 +813,12 @@ async fn non_stream_response(
                     index: 0,
                     message: ChoiceMessage {
                         role: "assistant".into(),
-                        content: text,
+                        content,
+                        tool_calls,
                     },
-                    finish_reason: "stop".into(),
+                    finish_reason: finish_reason.into(),
                 }],
+                usage: None,
             };
 
             Json(resp).into_response()
@@ -539,49 +851,85 @@ async fn stream_response(
     };
 
     let mut first = true;
+    let mut token_count: u32 = 0;
     let chat_id_clone = chat_id.clone();
     let model_name_clone = model_name.clone();
 
-    let event_stream = stream.map(move |result| {
-        let chunk = match result {
-            Ok(token) => {
-                let mut delta = Delta {
-                    role: None,
-                    content: Some(token.text),
-                };
-                if first {
-                    delta.role = Some("assistant".into());
-                    first = false;
+    let event_stream = stream
+        .map(move |result| {
+            let chunk = match result {
+                Ok(token) => {
+                    token_count += 1;
+                    let mut delta = Delta {
+                        role: None,
+                        content: Some(token.text),
+                    };
+                    if first {
+                        delta.role = Some("assistant".into());
+                        first = false;
+                    }
+                    StreamChunk {
+                        id: chat_id_clone.clone(),
+                        object: "chat.completion.chunk".into(),
+                        model: model_name_clone.clone(),
+                        choices: vec![StreamChoice {
+                            index: 0,
+                            delta,
+                            finish_reason: None,
+                        }],
+                        usage: None,
+                    }
                 }
-                StreamChunk {
+                Err(_) => StreamChunk {
                     id: chat_id_clone.clone(),
                     object: "chat.completion.chunk".into(),
                     model: model_name_clone.clone(),
                     choices: vec![StreamChoice {
                         index: 0,
-                        delta,
-                        finish_reason: None,
+                        delta: Delta {
+                            role: None,
+                            content: None,
+                        },
+                        finish_reason: Some("stop".into()),
                     }],
-                }
-            }
-            Err(_) => StreamChunk {
-                id: chat_id_clone.clone(),
-                object: "chat.completion.chunk".into(),
-                model: model_name_clone.clone(),
-                choices: vec![StreamChoice {
-                    index: 0,
-                    delta: Delta {
-                        role: None,
-                        content: None,
-                    },
-                    finish_reason: Some("stop".into()),
-                }],
-            },
-        };
+                    usage: Some(Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: token_count,
+                        total_tokens: token_count,
+                    }),
+                },
+            };
 
-        let data = serde_json::to_string(&chunk).unwrap_or_default();
-        Ok::<_, std::convert::Infallible>(Event::default().data(data))
-    });
+            let data = serde_json::to_string(&chunk).unwrap_or_default();
+            Ok::<_, std::convert::Infallible>(Event::default().data(data))
+        })
+        // Final chunk with finish_reason (in case stream ends without error)
+        .chain(futures::stream::once({
+            let chat_id2 = chat_id.clone();
+            let model_name2 = model_name.clone();
+            async move {
+                let chunk = StreamChunk {
+                    id: chat_id2,
+                    object: "chat.completion.chunk".into(),
+                    model: model_name2,
+                    choices: vec![StreamChoice {
+                        index: 0,
+                        delta: Delta {
+                            role: None,
+                            content: None,
+                        },
+                        finish_reason: Some("stop".into()),
+                    }],
+                    usage: None,
+                };
+                let data = serde_json::to_string(&chunk).unwrap_or_default();
+                Ok::<_, std::convert::Infallible>(Event::default().data(data))
+            }
+        }))
+        // [DONE] sentinel — required by OpenAI spec, Cursor depends on this
+        .chain(futures::stream::once(async {
+            Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"))
+        }));
 
     Sse::new(event_stream)
         .keep_alive(KeepAlive::default())
