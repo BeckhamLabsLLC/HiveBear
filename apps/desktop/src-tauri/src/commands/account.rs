@@ -475,29 +475,13 @@ pub async fn revoke_api_key(state: State<'_, AppState>, key_id: String) -> CmdRe
 // ── Internal helpers ────────────────────────────────────────────────
 
 /// Load the device Ed25519 signing key from the identity file, or generate a new one.
+///
+/// Delegates to `hivebear_mesh::NodeIdentity` so the desktop app and mesh node
+/// share the same persistent identity.
 fn load_device_identity(path: &std::path::Path) -> Result<ed25519_dalek::SigningKey, String> {
-    if path.exists() {
-        let bytes = std::fs::read(path).map_err(|e| format!("Failed to read identity: {e}"))?;
-        if bytes.len() == 64 {
-            let seed: [u8; 32] = bytes[..32].try_into().unwrap();
-            return Ok(ed25519_dalek::SigningKey::from_bytes(&seed));
-        }
-    }
-
-    // Generate new identity
-    use rand::rngs::OsRng;
-    let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
-
-    // Save: 32 bytes secret + 32 bytes public
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut data = Vec::with_capacity(64);
-    data.extend_from_slice(&key.to_bytes());
-    data.extend_from_slice(&key.verifying_key().to_bytes());
-    std::fs::write(path, &data).map_err(|e| format!("Failed to save identity: {e}"))?;
-
-    Ok(key)
+    let identity = hivebear_mesh::NodeIdentity::load_or_generate(path)
+        .map_err(|e| format!("Failed to load device identity: {e}"))?;
+    Ok(identity.signing_key)
 }
 
 async fn try_refresh(state: &AppState) -> Result<String, String> {

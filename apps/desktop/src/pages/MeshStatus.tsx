@@ -1,21 +1,36 @@
 import { useCallback, useEffect, useState } from "react";
-import { getMeshStatus, saveMeshConfig, getMeshConfig } from "../lib/invoke";
+import { getMeshStatus, saveMeshConfig, getMeshConfig, getMeshConnectionStatus, joinMesh, leaveMesh } from "../lib/invoke";
+import type { MeshConnectionStatus } from "../lib/invoke";
 import type { MeshStatus as MeshStatusType } from "../types";
 import { Link } from "react-router-dom";
-import { Network, Settings, Power, Shield, Activity } from "lucide-react";
-import { Card, Button, Badge, Surface, EmptyState } from "../components/ui";
+import { Network, Settings, Power, Shield, Activity, Wifi, WifiOff } from "lucide-react";
+import { Card, Button, Badge, Surface } from "../components/ui";
 
 export default function MeshStatus() {
   const [status, setStatus] = useState<MeshStatusType | null>(null);
+  const [connection, setConnection] = useState<MeshConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
+  const [joining, setJoining] = useState(false);
 
   const refresh = useCallback(async () => {
-    try { setStatus(await getMeshStatus()); } catch { /* ignore */ }
+    try {
+      const [s, c] = await Promise.all([getMeshStatus(), getMeshConnectionStatus()]);
+      setStatus(s);
+      setConnection(c);
+    } catch { /* ignore */ }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Poll connection status every 30s
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try { setConnection(await getMeshConnectionStatus()); } catch { /* ignore */ }
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const toggleEnabled = useCallback(async () => {
     if (!status) return;
@@ -111,13 +126,52 @@ export default function MeshStatus() {
           </div>
         </Card>
 
-        {/* Peer discovery placeholder */}
-        {status.enabled && (
-          <EmptyState
-            icon={<Network size={24} />}
-            title="Waiting for peers"
-            description={`Peer discovery will appear here when the coordination server is running at ${status.coordination_server}`}
-          />
+        {/* Connection status */}
+        {status.enabled && connection && (
+          <Card padding="lg">
+            <div className="flex items-center gap-4">
+              <div className={[
+                "flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)]",
+                connection.running ? "bg-success/10 text-success" : "bg-surface-overlay text-text-muted",
+              ].join(" ")}>
+                {connection.running ? <Wifi size={24} /> : <WifiOff size={24} />}
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-medium">
+                    {connection.running ? "Connected to Hive" : "Not Connected"}
+                  </span>
+                  {connection.running && (
+                    <Badge variant="default">{connection.peer_count} peer{connection.peer_count !== 1 ? "s" : ""}</Badge>
+                  )}
+                </div>
+                <p className="mt-0.5 text-sm text-text-muted">
+                  {connection.running
+                    ? `Node ${connection.node_id?.slice(0, 12)}… registered and sending heartbeats`
+                    : "Click Join to register with the coordination server."}
+                </p>
+              </div>
+              <Button
+                variant={connection.running ? "secondary" : "primary"}
+                disabled={joining}
+                onClick={async () => {
+                  setJoining(true);
+                  try {
+                    if (connection.running) {
+                      await leaveMesh();
+                    } else {
+                      await joinMesh();
+                    }
+                    await refresh();
+                  } catch { /* ignore */ }
+                  finally { setJoining(false); }
+                }}
+              >
+                {connection.running ? <WifiOff size={14} /> : <Wifi size={14} />}
+                {joining ? "…" : connection.running ? "Leave" : "Join"}
+              </Button>
+            </div>
+          </Card>
         )}
       </div>
     </Surface>

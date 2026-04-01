@@ -25,6 +25,14 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://huggingface.co https://*.huggingface.co; font-src 'self'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ4RThEN0EwNUNGOEI0RTkKUldUcHRQaGNvTmZvU0V5QUhuYzhmTFloM1pNUWQ2Z3I3T2h1SmxvUG4yVWlsR0JVVzVtNWtad1EK",
+      "endpoints": [
+        "https://github.com/BeckhamLabsLLC/HiveBear/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

@@ -5,6 +5,7 @@ mod validation;
 
 use state::AppState;
 use tauri::Manager;
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,6 +17,8 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // On mobile, use Tauri's app data dir (Android internal storage).
@@ -30,6 +33,19 @@ pub fn run() {
             } else {
                 AppState::init()
             };
+            // Auto-start mesh if enabled and auto_join is configured
+            {
+                let should_start = {
+                    let config = app_state.config.lock().unwrap();
+                    config.mesh.enabled && config.mesh.auto_join
+                };
+                if should_start {
+                    if let Err(e) = app_state.start_mesh() {
+                        warn!("Failed to auto-start mesh (non-fatal): {e}");
+                    }
+                }
+            }
+
             app.manage(app_state);
             Ok(())
         })
@@ -53,6 +69,9 @@ pub fn run() {
             commands::mesh::get_mesh_status,
             commands::mesh::get_mesh_config,
             commands::mesh::save_mesh_config,
+            commands::mesh::join_mesh,
+            commands::mesh::leave_mesh,
+            commands::mesh::get_mesh_connection_status,
             commands::chat::list_conversations,
             commands::chat::create_conversation,
             commands::chat::get_conversation_messages,

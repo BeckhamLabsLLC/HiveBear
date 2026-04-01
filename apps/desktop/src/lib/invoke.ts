@@ -85,6 +85,24 @@ export function saveMeshConfig(meshConfig: MeshConfig): Promise<void> {
   return invoke("save_mesh_config", { meshConfig });
 }
 
+export interface MeshConnectionStatus {
+  running: boolean;
+  peer_count: number;
+  node_id: string | null;
+}
+
+export function joinMesh(): Promise<MeshConnectionStatus> {
+  return invoke("join_mesh");
+}
+
+export function leaveMesh(): Promise<void> {
+  return invoke("leave_mesh");
+}
+
+export function getMeshConnectionStatus(): Promise<MeshConnectionStatus> {
+  return invoke("get_mesh_connection_status");
+}
+
 // ── Chat Persistence ─────────────────────────────────────────────
 
 export function listConversations(): Promise<Conversation[]> {

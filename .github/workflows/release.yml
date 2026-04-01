@@ -174,6 +174,8 @@ jobs:
         if: matrix.tauri_features == ''
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           cd apps/desktop
           cargo tauri build
@@ -182,6 +184,8 @@ jobs:
         if: matrix.tauri_features != ''
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           cd apps/desktop
           cargo tauri build -- --features ${{ matrix.tauri_features }}
@@ -194,13 +198,18 @@ jobs:
           path: |
             target/release/bundle/deb/*.deb
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.tar.gz
+            target/release/bundle/appimage/*.AppImage.tar.gz.sig
 
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-macos
-          path: target/release/bundle/dmg/*.dmg
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
 
       - name: Upload Windows MSI artifacts
         if: matrix.platform == 'windows'
@@ -214,7 +223,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-windows-nsis
-          path: target/release/bundle/nsis/*.exe
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.nsis.zip
+            target/release/bundle/nsis/*.nsis.zip.sig
 
   verify-cargo-install:
     name: Verify cargo install
@@ -331,26 +343,110 @@ jobs:
             --generate-notes \
             release/*
 
+  sign-windows:
+    name: Sign Windows Installers (SignPath)
+    needs: [build-desktop]
+    if: ${{ !cancelled() && needs.build-desktop.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows MSI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-msi
+          path: unsigned/msi
+
+      - name: Download Windows NSIS artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-nsis
+          path: unsigned/nsis
+
+      - name: Submit to SignPath
+        if: vars.SIGNPATH_ORG_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: hivebear
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: windows-installers
+          input-artifact-path: unsigned/
+          output-artifact-path: signed/
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 600
+
+      - name: Upload signed MSI
+        if: vars.SIGNPATH_ORG_ID != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-msi-signed
+          path: signed/msi/
+
+      - name: Upload signed NSIS
+        if: vars.SIGNPATH_ORG_ID != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-nsis-signed
+          path: signed/nsis/
+
   upload-desktop-assets:
     name: Upload Desktop Assets to Release
     permissions:
       contents: write
-    needs: [create-release, build-desktop]
+    needs: [create-release, build-desktop, sign-windows]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download desktop artifacts
+      # Try signed Windows artifacts first, fall back to unsigned
+      - name: Download signed Windows MSI
+        id: signed-msi
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: desktop-*
-          path: artifacts
+          name: desktop-windows-msi-signed
+          path: artifacts/desktop-windows-msi
+
+      - name: Download signed Windows NSIS
+        id: signed-nsis
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-nsis-signed
+          path: artifacts/desktop-windows-nsis
+
+      - name: Download unsigned Windows MSI (fallback)
+        if: steps.signed-msi.outcome != 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-msi
+          path: artifacts/desktop-windows-msi
+
+      - name: Download unsigned Windows NSIS (fallback)
+        if: steps.signed-nsis.outcome != 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-nsis
+          path: artifacts/desktop-windows-nsis
+
+      - name: Download Linux desktop artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-linux
+          path: artifacts/desktop-linux
+
+      - name: Download macOS desktop artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-macos
+          path: artifacts/desktop-macos
 
       - name: Collect and rename desktop assets
         run: |
           mkdir -p release
-          # Collect all desktop artifacts
-          find artifacts/desktop-* -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" \) -exec cp {} release/ \;
+          # Collect all desktop artifacts (installers + updater bundles + signatures)
+          find artifacts/desktop-* -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" -o -name "*.tar.gz" -o -name "*.nsis.zip" -o -name "*.sig" \) -exec cp {} release/ \;
 
           # Create stable-named copies for website download buttons
           cd release
@@ -362,6 +458,77 @@ jobs:
 
           # Generate checksums for desktop assets
           sha256sum * > SHA256SUMS-desktop.txt
+
+      - name: Generate updater manifest (latest.json)
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          BASE_URL="https://github.com/${REPO}/releases/download/${TAG_NAME}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Read signatures (if they exist)
+          LINUX_SIG=""
+          MACOS_SIG=""
+          WINDOWS_SIG=""
+
+          for f in release/*.AppImage.tar.gz.sig; do
+            [ -f "$f" ] && LINUX_SIG=$(cat "$f")
+          done
+          for f in release/*.app.tar.gz.sig; do
+            [ -f "$f" ] && MACOS_SIG=$(cat "$f")
+          done
+          for f in release/*.nsis.zip.sig; do
+            [ -f "$f" ] && WINDOWS_SIG=$(cat "$f")
+          done
+
+          # Find update bundle filenames
+          LINUX_FILE=""
+          MACOS_FILE=""
+          WINDOWS_FILE=""
+
+          for f in release/*.AppImage.tar.gz; do
+            [ -f "$f" ] && LINUX_FILE=$(basename "$f")
+          done
+          for f in release/*.app.tar.gz; do
+            [ -f "$f" ] && MACOS_FILE=$(basename "$f")
+          done
+          for f in release/*.nsis.zip; do
+            [ -f "$f" ] && WINDOWS_FILE=$(basename "$f")
+          done
+
+          # Build latest.json
+          python3 -c "
+          import json, sys
+          platforms = {}
+          if '$LINUX_SIG' and '$LINUX_FILE':
+              platforms['linux-x86_64'] = {
+                  'signature': '$LINUX_SIG',
+                  'url': '${BASE_URL}/${LINUX_FILE}'
+              }
+          if '$MACOS_SIG' and '$MACOS_FILE':
+              platforms['darwin-x86_64'] = {
+                  'signature': '$MACOS_SIG',
+                  'url': '${BASE_URL}/${MACOS_FILE}'
+              }
+              platforms['darwin-aarch64'] = {
+                  'signature': '$MACOS_SIG',
+                  'url': '${BASE_URL}/${MACOS_FILE}'
+              }
+          if '$WINDOWS_SIG' and '$WINDOWS_FILE':
+              platforms['windows-x86_64'] = {
+                  'signature': '$WINDOWS_SIG',
+                  'url': '${BASE_URL}/${WINDOWS_FILE}'
+              }
+          manifest = {
+              'version': '${VERSION}',
+              'pub_date': '${PUB_DATE}',
+              'platforms': platforms
+          }
+          json.dump(manifest, open('release/latest.json', 'w'), indent=2)
+          print(json.dumps(manifest, indent=2))
+          "
 
       - name: Upload desktop assets to release
         env:

@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ToastProvider } from "./components/Toast";
+import UpdateNotification from "./components/UpdateNotification";
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import ModelBrowser from "./pages/ModelBrowser";
@@ -12,6 +13,7 @@ import Settings from "./pages/Settings";
 export default function App() {
   return (
     <ToastProvider>
+      <UpdateNotification />
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>

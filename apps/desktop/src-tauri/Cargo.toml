@@ -11,6 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 hivebear-core = { path = "../../../crates/hivebear-core" }
 hivebear-inference = { path = "../../../crates/hivebear-inference", default-features = false }
+hivebear-mesh = { path = "../../../crates/hivebear-mesh" }
 hivebear-persistence = { path = "../../../crates/hivebear-persistence" }
 hivebear-registry = { path = "../../../crates/hivebear-registry" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -18,7 +19,9 @@ hex = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 tauri = { version = "2", features = ["image-png"] }
+tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
