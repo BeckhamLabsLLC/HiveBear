@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use candle_core::{quantized::gguf_file, Device, IndexOp, Tensor};
+use candle_core::{quantized::gguf_file, DType, Device, IndexOp, Tensor};
 use candle_transformers::models::quantized_llama::ModelWeights;
 
 use crate::chat_template;
+use crate::engine::candle_pipeline::SplittableLlama;
 use crate::error::{InferenceError, Result};
 use crate::types::*;
 use hivebear_core::types::{InferenceEngine, ModelFormat};
@@ -24,18 +25,32 @@ struct LoadedModel {
 unsafe impl Send for LoadedModel {}
 unsafe impl Sync for LoadedModel {}
 
+/// State for a pipeline-loaded model (partial layer range).
+struct PipelineModel {
+    llama: SplittableLlama,
+    tokenizer: tokenizers::Tokenizer,
+    #[allow(dead_code)]
+    stage_config: PipelineStageConfig,
+}
+
+unsafe impl Send for PipelineModel {}
+unsafe impl Sync for PipelineModel {}
+
 /// Pure Rust inference backend using HuggingFace Candle.
 ///
 /// Supports GGUF and SafeTensors models with no native dependencies.
 /// This is the default/fallback backend that compiles everywhere.
 pub struct CandleBackend {
     loaded_models: Arc<Mutex<HashMap<u64, Arc<LoadedModel>>>>,
+    /// Models loaded for pipeline-parallel inference (partial layer ranges).
+    pipeline_models: Arc<Mutex<HashMap<u64, Arc<Mutex<PipelineModel>>>>>,
 }
 
 impl CandleBackend {
     pub fn new() -> Self {
         Self {
             loaded_models: Arc::new(Mutex::new(HashMap::new())),
+            pipeline_models: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -69,9 +84,11 @@ impl InferenceBackend for CandleBackend {
         false
     }
 
-    async fn load_model(&self, path: &Path, _config: &LoadConfig) -> Result<ModelHandle> {
+    async fn load_model(&self, path: &Path, config: &LoadConfig) -> Result<ModelHandle> {
         let path = path.to_path_buf();
         let loaded_models = self.loaded_models.clone();
+        let pipeline_models = self.pipeline_models.clone();
+        let pipeline_stage = config.pipeline_stage.clone();
 
         tokio::task::spawn_blocking(move || {
             if !path.exists() {
@@ -80,9 +97,7 @@ impl InferenceBackend for CandleBackend {
 
             let device = Device::Cpu;
 
-            // Load GGUF model
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
             if ext != "gguf" {
                 return Err(InferenceError::UnsupportedFormat(format!(
                     "Candle backend currently supports GGUF files only, got: .{ext}"
@@ -97,13 +112,7 @@ impl InferenceBackend for CandleBackend {
                 InferenceError::LoadError(format!("Failed to read GGUF content: {e}"))
             })?;
 
-            // Load weights using quantized_llama (supports Llama, Mistral, Qwen, and
-            // other architectures that share the Llama structure)
-            let weights = ModelWeights::from_gguf(content, &mut file, &device).map_err(|e| {
-                InferenceError::LoadError(format!("Failed to load model weights: {e}"))
-            })?;
-
-            // Try to load tokenizer from same directory
+            // Load tokenizer from same directory
             let model_dir = path.parent().unwrap_or(Path::new("."));
             let tokenizer_path = model_dir.join("tokenizer.json");
             let tokenizer = if tokenizer_path.exists() {
@@ -118,22 +127,58 @@ impl InferenceBackend for CandleBackend {
                 )));
             };
 
-            tracing::info!(
-                path = %path.display(),
-                "Model loaded via Candle"
-            );
+            let handle = ModelHandle::new(path.clone(), InferenceEngine::Candle);
 
-            let handle = ModelHandle::new(path, InferenceEngine::Candle);
-            let loaded = Arc::new(LoadedModel {
-                weights,
-                tokenizer,
-                device,
-            });
+            // Pipeline-parallel load path: load only the assigned layer range
+            if let Some(stage) = pipeline_stage {
+                let llama = SplittableLlama::load_partial(
+                    &content,
+                    &mut file,
+                    &device,
+                    stage.layer_range.clone(),
+                    stage.total_layers,
+                )
+                .map_err(|e| {
+                    InferenceError::LoadError(format!("Failed to load partial model: {e}"))
+                })?;
 
-            loaded_models
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(handle.id, loaded);
+                tracing::info!(
+                    path = %path.display(),
+                    layers = ?stage.layer_range,
+                    total = stage.total_layers,
+                    "Pipeline model loaded via Candle"
+                );
+
+                let pipeline_model = PipelineModel {
+                    llama,
+                    tokenizer,
+                    stage_config: stage,
+                };
+
+                pipeline_models
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(handle.id, Arc::new(Mutex::new(pipeline_model)));
+            } else {
+                // Standard full-model load path
+                let weights =
+                    ModelWeights::from_gguf(content, &mut file, &device).map_err(|e| {
+                        InferenceError::LoadError(format!("Failed to load model weights: {e}"))
+                    })?;
+
+                tracing::info!(path = %path.display(), "Model loaded via Candle");
+
+                let loaded = Arc::new(LoadedModel {
+                    weights,
+                    tokenizer,
+                    device,
+                });
+
+                loaded_models
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(handle.id, loaded);
+            }
 
             Ok(handle)
         })
@@ -186,7 +231,115 @@ impl InferenceBackend for CandleBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id);
+        self.pipeline_models
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&handle.id);
         Ok(())
+    }
+
+    async fn forward_partial(
+        &self,
+        handle: &ModelHandle,
+        input: &ActivationData,
+        stage: &PipelineStageConfig,
+        index_pos: usize,
+    ) -> Result<ActivationData> {
+        let pm = self.get_pipeline_model(handle.id)?;
+        let input_clone = input.clone();
+        let stage_clone = stage.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut pm = pm.lock().unwrap_or_else(|e| e.into_inner());
+            let device = &Device::Cpu;
+
+            // Deserialize input activation → Candle Tensor
+            let mut x = activation_to_tensor(&input_clone, device)?;
+
+            // First stage with token-ID-shaped input: embed first
+            let dims = x.dims();
+            if stage_clone.is_first_stage() && dims.len() == 2 && dims[1] == 1 {
+                let token_ids = tensor_to_u32_ids(&input_clone)?;
+                let ids_tensor = Tensor::new(token_ids.as_slice(), device)
+                    .map_err(|e| ie(format!("Tensor from token IDs: {e}")))?
+                    .unsqueeze(0)
+                    .map_err(|e| ie(format!("Unsqueeze: {e}")))?;
+                x = pm
+                    .llama
+                    .embed(&ids_tensor)
+                    .map_err(|e| ie(format!("Embed: {e}")))?;
+            }
+
+            // Forward through our assigned blocks
+            x = pm
+                .llama
+                .forward_blocks(x, index_pos)
+                .map_err(|e| ie(format!("Forward blocks: {e}")))?;
+
+            // Last stage: project to logits
+            if stage_clone.is_last_stage() {
+                x = pm
+                    .llama
+                    .project_to_logits(&x)
+                    .map_err(|e| ie(format!("Project to logits: {e}")))?;
+            }
+
+            tensor_to_activation(&x)
+        })
+        .await
+        .map_err(|e| ie(format!("Task join error: {e}")))?
+    }
+
+    async fn embed_tokens(
+        &self,
+        handle: &ModelHandle,
+        token_ids: &[u32],
+    ) -> Result<ActivationData> {
+        let pm = self.get_pipeline_model(handle.id)?;
+        let ids = token_ids.to_vec();
+
+        tokio::task::spawn_blocking(move || {
+            let pm = pm.lock().unwrap_or_else(|e| e.into_inner());
+            let device = &Device::Cpu;
+
+            let ids_tensor = Tensor::new(ids.as_slice(), device)
+                .map_err(|e| ie(format!("Tensor from token IDs: {e}")))?
+                .unsqueeze(0)
+                .map_err(|e| ie(format!("Unsqueeze: {e}")))?;
+
+            let embedded = pm
+                .llama
+                .embed(&ids_tensor)
+                .map_err(|e| ie(format!("Embed: {e}")))?;
+
+            tensor_to_activation(&embedded)
+        })
+        .await
+        .map_err(|e| ie(format!("Task join error: {e}")))?
+    }
+
+    async fn sample_from_logits(
+        &self,
+        handle: &ModelHandle,
+        logits: &ActivationData,
+        temperature: f32,
+        top_p: f32,
+    ) -> Result<(u32, String)> {
+        let pm = self.get_pipeline_model(handle.id)?;
+        let logits_clone = logits.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let pm = pm.lock().unwrap_or_else(|e| e.into_inner());
+            let device = &Device::Cpu;
+
+            let logits_tensor = activation_to_tensor(&logits_clone, device)?;
+            let token_id = sample_token(&logits_tensor, temperature, top_p)?;
+            let text = pm.tokenizer.decode(&[token_id], true).unwrap_or_default();
+
+            Ok((token_id, text))
+        })
+        .await
+        .map_err(|e| ie(format!("Task join error: {e}")))?
     }
 }
 
@@ -198,6 +351,114 @@ impl CandleBackend {
             .get(&id)
             .cloned()
             .ok_or(InferenceError::InvalidHandle)
+    }
+
+    fn get_pipeline_model(&self, id: u64) -> Result<Arc<Mutex<PipelineModel>>> {
+        self.pipeline_models
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned()
+            .ok_or(InferenceError::InvalidHandle)
+    }
+}
+
+/// Shorthand for creating an InferenceError::GenerationError.
+fn ie(msg: String) -> InferenceError {
+    InferenceError::GenerationError(msg)
+}
+
+/// Serialize a Candle Tensor to ActivationData bytes (F32).
+fn tensor_to_activation(t: &Tensor) -> Result<ActivationData> {
+    let t = t
+        .to_dtype(DType::F32)
+        .map_err(|e| ie(format!("to_dtype: {e}")))?;
+    let shape = t.dims().to_vec();
+    let data: Vec<f32> = t
+        .flatten_all()
+        .map_err(|e| ie(format!("flatten: {e}")))?
+        .to_vec1()
+        .map_err(|e| ie(format!("to_vec1: {e}")))?;
+    let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+    Ok(ActivationData {
+        data: bytes,
+        shape,
+        dtype: ActivationDtype::F32,
+    })
+}
+
+/// Deserialize ActivationData bytes back into a Candle Tensor.
+fn activation_to_tensor(act: &ActivationData, device: &Device) -> Result<Tensor> {
+    let floats: Vec<f32> = match act.dtype {
+        ActivationDtype::F32 => act
+            .data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+        ActivationDtype::F16 => act
+            .data
+            .chunks_exact(2)
+            .map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f16_to_f32(bits)
+            })
+            .collect(),
+        ActivationDtype::BF16 => act
+            .data
+            .chunks_exact(2)
+            .map(|c| {
+                let bits = u16::from_le_bytes([c[0], c[1]]);
+                f32::from_bits((bits as u32) << 16)
+            })
+            .collect(),
+    };
+    Tensor::from_vec(floats, act.shape.as_slice(), device).map_err(|e| ie(format!("from_vec: {e}")))
+}
+
+/// IEEE 754 half-precision (F16) to single-precision (F32) conversion.
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let mant = (bits & 0x3ff) as u32;
+
+    let f32_bits = if exp == 0 {
+        if mant == 0 {
+            sign << 31 // ±0
+        } else {
+            // Denormalized: convert to normalized f32
+            let mut m = mant;
+            let mut e = 0u32;
+            while (m & 0x400) == 0 {
+                m <<= 1;
+                e += 1;
+            }
+            let m = (m & 0x3ff) << 13;
+            let e = (127 - 15 - e + 1) << 23;
+            (sign << 31) | e | m
+        }
+    } else if exp == 31 {
+        // Inf or NaN
+        (sign << 31) | (0xff << 23) | (mant << 13)
+    } else {
+        // Normalized
+        let e = (exp as i32 - 15 + 127) as u32;
+        (sign << 31) | (e << 23) | (mant << 13)
+    };
+    f32::from_bits(f32_bits)
+}
+
+/// Extract u32 token IDs from an ActivationData that contains packed f32 values.
+fn tensor_to_u32_ids(act: &ActivationData) -> Result<Vec<u32>> {
+    match act.dtype {
+        ActivationDtype::F32 => {
+            let ids: Vec<u32> = act
+                .data
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u32)
+                .collect();
+            Ok(ids)
+        }
+        _ => Err(ie("Token IDs must be F32-encoded".into())),
     }
 }
 

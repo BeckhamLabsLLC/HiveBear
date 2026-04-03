@@ -38,6 +38,9 @@ pub struct LoadConfig {
     pub use_mmap: bool,
     pub use_mlock: bool,
     pub seed: Option<u64>,
+    /// When set, load only the specified layer range for pipeline-parallel inference.
+    #[serde(skip)]
+    pub pipeline_stage: Option<PipelineStageConfig>,
 }
 
 impl Default for LoadConfig {
@@ -50,6 +53,7 @@ impl Default for LoadConfig {
             use_mmap: true,
             use_mlock: false,
             seed: None,
+            pipeline_stage: None,
         }
     }
 }

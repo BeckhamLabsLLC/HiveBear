@@ -6,6 +6,9 @@ pub mod llamacpp;
 #[cfg(all(any(feature = "candle", feature = "wasm"), not(target_arch = "wasm32")))]
 pub mod candle_backend;
 
+#[cfg(all(any(feature = "candle", feature = "wasm"), not(target_arch = "wasm32")))]
+pub(crate) mod candle_pipeline;
+
 #[cfg(all(any(feature = "candle", feature = "wasm"), target_arch = "wasm32"))]
 pub mod candle_wasm;
 

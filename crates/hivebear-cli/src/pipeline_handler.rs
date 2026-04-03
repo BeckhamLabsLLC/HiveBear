@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use hivebear_inference::types::{ModelHandle, OffloadConfig};
+use hivebear_inference::types::{ModelHandle, PipelineStageConfig};
 use hivebear_inference::{LoadConfig, Orchestrator};
 use hivebear_mesh::protocol::MeshPipelineHandler;
 
@@ -67,16 +67,13 @@ impl MeshPipelineHandler for CliPipelineHandler {
             layer_range.start, layer_range.end, model_source
         );
 
-        // Load with auto offload — mmap ensures only accessed layers are paged in.
-        // GPU offload is limited to the assigned layer range.
-        let gpu_layers = layer_range.end - layer_range.start;
+        // Pipeline-aware load: tells the backend to load only the assigned layers.
         let load_config = LoadConfig {
             context_length: 4096,
-            offload: OffloadConfig {
-                gpu_layers: Some(gpu_layers),
-                auto: false,
-                ..Default::default()
-            },
+            pipeline_stage: Some(PipelineStageConfig {
+                layer_range: layer_range.clone(),
+                total_layers,
+            }),
             use_mmap: true,
             ..Default::default()
         };

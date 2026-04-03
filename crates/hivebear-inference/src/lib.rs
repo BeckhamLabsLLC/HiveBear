@@ -15,7 +15,7 @@ pub use engine::{EngineRegistry, InferenceBackend};
 pub use error::{InferenceError, Result};
 pub use orchestrator::{Orchestrator, OrchestratorEvent};
 pub use types::{
-    ChatMessage, ContentBlock, ContentPart, GenerateRequest, GenerateResponse, LoadConfig,
-    ModelHandle, ModelInfo, OffloadConfig, SamplingParams, Token, ToolCallResponse, ToolChoice,
-    ToolDefinition,
+    ActivationData, ActivationDtype, ChatMessage, ContentBlock, ContentPart, GenerateRequest,
+    GenerateResponse, LoadConfig, ModelHandle, ModelInfo, OffloadConfig, PipelineStageConfig,
+    SamplingParams, Token, ToolCallResponse, ToolChoice, ToolDefinition,
 };
