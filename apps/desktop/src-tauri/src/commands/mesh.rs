@@ -82,7 +82,7 @@ pub async fn leave_mesh(state: State<'_, AppState>) -> CmdResult<()> {
 /// Get the live mesh connection status.
 #[tauri::command]
 pub fn get_mesh_connection_status(state: State<'_, AppState>) -> CmdResult<MeshConnectionStatus> {
-    let node = state.mesh_node.lock().unwrap();
+    let node = state.mesh_node.lock().unwrap_or_else(|e| e.into_inner());
     match node.as_ref() {
         Some(n) => Ok(MeshConnectionStatus {
             running: n.is_running(),

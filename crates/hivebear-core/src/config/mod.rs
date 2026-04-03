@@ -135,7 +135,7 @@ pub struct ApiConfig {
 /// Supports 35+ providers via a unified `api_keys` map keyed by provider prefix
 /// (e.g. `"openai"`, `"groq"`, `"anthropic"`). Legacy `openai_api_key` and
 /// `anthropic_api_key` fields are read for backward compatibility but not written.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CloudConfig {
     /// Provider API keys, keyed by provider prefix.
     /// Example: `{ "openai": "sk-...", "groq": "gsk_...", "anthropic": "sk-ant-..." }`
@@ -161,6 +161,25 @@ pub struct CloudConfig {
     /// Deprecated: use `api_keys.anthropic` instead. Read on load, not written on save.
     #[serde(default, skip_serializing)]
     pub anthropic_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for CloudConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudConfig")
+            .field("api_keys", &format!("[{} keys]", self.api_keys.len()))
+            .field("custom_endpoints", &self.custom_endpoints)
+            .field("cloud_fallback", &self.cloud_fallback)
+            .field("default_provider", &self.default_provider)
+            .field(
+                "openai_api_key",
+                &self.openai_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "anthropic_api_key",
+                &self.anthropic_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl CloudConfig {

@@ -132,7 +132,7 @@ impl InferenceBackend for CandleBackend {
 
             loaded_models
                 .lock()
-                .expect("lock poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(handle.id, loaded);
 
             Ok(handle)
@@ -184,7 +184,7 @@ impl InferenceBackend for CandleBackend {
     async fn unload(&self, handle: &ModelHandle) -> Result<()> {
         self.loaded_models
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id);
         Ok(())
     }
@@ -194,7 +194,7 @@ impl CandleBackend {
     fn get_loaded(&self, id: u64) -> Result<Arc<LoadedModel>> {
         self.loaded_models
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&id)
             .cloned()
             .ok_or(InferenceError::InvalidHandle)

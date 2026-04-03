@@ -57,7 +57,7 @@ impl CheckpointStore {
             timestamp: Instant::now(),
         };
 
-        let mut store = self.checkpoints.lock().unwrap();
+        let mut store = self.checkpoints.lock().unwrap_or_else(|e| e.into_inner());
         let session_map = store.entry(session_id).or_default();
 
         // Evict oldest if at capacity
@@ -76,7 +76,7 @@ impl CheckpointStore {
 
     /// Get the most recent checkpoint for a session.
     pub fn latest(&self, session_id: &Uuid) -> Option<ActivationCheckpoint> {
-        let store = self.checkpoints.lock().unwrap();
+        let store = self.checkpoints.lock().unwrap_or_else(|e| e.into_inner());
         store.get(session_id).and_then(|session_map| {
             session_map
                 .values()
@@ -87,7 +87,7 @@ impl CheckpointStore {
 
     /// Get a specific checkpoint by session and position.
     pub fn get(&self, session_id: &Uuid, token_position: u32) -> Option<ActivationCheckpoint> {
-        let store = self.checkpoints.lock().unwrap();
+        let store = self.checkpoints.lock().unwrap_or_else(|e| e.into_inner());
         store
             .get(session_id)
             .and_then(|session_map| session_map.get(&token_position).cloned())
@@ -95,13 +95,13 @@ impl CheckpointStore {
 
     /// Remove all checkpoints for a session (on teardown).
     pub fn clear_session(&self, session_id: &Uuid) {
-        let mut store = self.checkpoints.lock().unwrap();
+        let mut store = self.checkpoints.lock().unwrap_or_else(|e| e.into_inner());
         store.remove(session_id);
     }
 
     /// Total number of checkpoints across all sessions.
     pub fn total_checkpoints(&self) -> usize {
-        let store = self.checkpoints.lock().unwrap();
+        let store = self.checkpoints.lock().unwrap_or_else(|e| e.into_inner());
         store.values().map(|m| m.len()).sum()
     }
 }

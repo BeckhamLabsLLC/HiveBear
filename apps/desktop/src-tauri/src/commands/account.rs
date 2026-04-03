@@ -56,7 +56,7 @@ pub struct NewApiKey {
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn get_server_url(state: &AppState) -> String {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     config
         .account
         .server_url
@@ -65,7 +65,13 @@ fn get_server_url(state: &AppState) -> String {
 }
 
 fn get_jwt(state: &AppState) -> Option<String> {
-    state.config.lock().unwrap().account.jwt_token.clone()
+    state
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .account
+        .jwt_token
+        .clone()
 }
 
 fn save_auth(
@@ -76,7 +82,7 @@ fn save_auth(
     tier: &str,
     license: Option<&str>,
 ) {
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     config.account.auth_mode = Some(auth_mode.to_string());
     config.account.jwt_token = Some(jwt.to_string());
     config.account.refresh_token = Some(refresh.to_string());
@@ -86,7 +92,7 @@ fn save_auth(
 }
 
 fn clear_auth(state: &AppState) {
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
     config.account = Default::default();
     let _ = config.save();
 }
@@ -117,8 +123,16 @@ pub async fn login(
 
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    let jwt = data["jwt"].as_str().unwrap_or("").to_string();
-    let refresh = data["refresh_token"].as_str().unwrap_or("").to_string();
+    let jwt = data["jwt"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty JWT")?
+        .to_string();
+    let refresh = data["refresh_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty refresh token")?
+        .to_string();
     let tier = data["tier"].as_str().unwrap_or("community").to_string();
 
     save_auth(&state, "email", &jwt, &refresh, &tier, None);
@@ -160,8 +174,16 @@ pub async fn register(
 
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    let jwt = data["jwt"].as_str().unwrap_or("").to_string();
-    let refresh = data["refresh_token"].as_str().unwrap_or("").to_string();
+    let jwt = data["jwt"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty JWT")?
+        .to_string();
+    let refresh = data["refresh_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty refresh token")?
+        .to_string();
     let tier = data["tier"].as_str().unwrap_or("community").to_string();
 
     save_auth(&state, "email", &jwt, &refresh, &tier, None);
@@ -230,8 +252,16 @@ pub async fn activate_device(state: State<'_, AppState>) -> CmdResult<AuthResult
 
     let data: serde_json::Value = verify_resp.json().await.map_err(|e| e.to_string())?;
 
-    let jwt = data["jwt"].as_str().unwrap_or("").to_string();
-    let refresh = data["refresh_token"].as_str().unwrap_or("").to_string();
+    let jwt = data["jwt"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty JWT")?
+        .to_string();
+    let refresh = data["refresh_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty refresh token")?
+        .to_string();
     let tier = data["tier"].as_str().unwrap_or("community").to_string();
     let license = data["license_token"].as_str().map(|s| s.to_string());
 
@@ -307,7 +337,7 @@ pub async fn get_account(state: State<'_, AppState>) -> CmdResult<Option<Account
                 }
                 Err(_) => {
                     // Check cached license token for offline mode
-                    let config = state.config.lock().unwrap();
+                    let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(ref _license) = config.account.license_token {
                         // Return cached info from config
                         Ok(Some(AccountInfo {
@@ -333,7 +363,7 @@ pub async fn get_account(state: State<'_, AppState>) -> CmdResult<Option<Account
         }
         _ => {
             // Network error — return cached info if available
-            let config = state.config.lock().unwrap();
+            let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
             if config.account.jwt_token.is_some() {
                 Ok(Some(AccountInfo {
                     auth_mode: config.account.auth_mode.clone().unwrap_or_default(),
@@ -486,7 +516,7 @@ fn load_device_identity(path: &std::path::Path) -> Result<ed25519_dalek::Signing
 
 async fn try_refresh(state: &AppState) -> Result<String, String> {
     let refresh_token = {
-        let config = state.config.lock().unwrap();
+        let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
         config.account.refresh_token.clone()
     };
 
@@ -507,8 +537,16 @@ async fn try_refresh(state: &AppState) -> Result<String, String> {
 
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    let jwt = data["jwt"].as_str().unwrap_or("").to_string();
-    let new_refresh = data["refresh_token"].as_str().unwrap_or("").to_string();
+    let jwt = data["jwt"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty JWT")?
+        .to_string();
+    let new_refresh = data["refresh_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("Server returned empty refresh token")?
+        .to_string();
     let tier = data["tier"].as_str().unwrap_or("community").to_string();
     let auth_mode = data["auth_mode"].as_str().unwrap_or("email").to_string();
     let license = data["license_token"].as_str().map(|s| s.to_string());

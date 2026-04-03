@@ -124,7 +124,7 @@ impl InferenceBackend for LlamaCppBackend {
 
             loaded_models
                 .lock()
-                .expect("lock poisoned")
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(handle.id, loaded);
 
             Ok(handle)
@@ -178,7 +178,7 @@ impl InferenceBackend for LlamaCppBackend {
     async fn unload(&self, handle: &ModelHandle) -> Result<()> {
         self.loaded_models
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id);
         Ok(())
     }
@@ -188,7 +188,7 @@ impl LlamaCppBackend {
     fn get_loaded(&self, id: u64) -> Result<Arc<LoadedModel>> {
         self.loaded_models
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&id)
             .cloned()
             .ok_or(InferenceError::InvalidHandle)

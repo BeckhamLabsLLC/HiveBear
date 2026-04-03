@@ -42,7 +42,7 @@ pub async fn init() -> Result<JsValue, JsValue> {
     let profile = profiler::profile();
 
     let backend = CandleWasmBackend::new();
-    *BACKEND.lock().unwrap() = Some(backend);
+    *BACKEND.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend);
 
     serde_wasm_bindgen::to_value(&profile).map_err(|e| JsValue::from_str(&e.to_string()))
 }
@@ -61,7 +61,7 @@ pub fn load_model_from_bytes(
     tokenizer_bytes: &[u8],
     model_name: &str,
 ) -> Result<f64, JsValue> {
-    let mut backend_guard = BACKEND.lock().unwrap();
+    let mut backend_guard = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
     let backend = backend_guard
         .as_mut()
         .ok_or_else(|| JsValue::from_str("Not initialized. Call init() first."))?;
@@ -71,7 +71,7 @@ pub fn load_model_from_bytes(
         .map_err(err_to_js)?;
 
     let id = handle.id as f64;
-    *CURRENT_HANDLE.lock().unwrap() = Some(handle);
+    *CURRENT_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     Ok(id)
 }
 
@@ -95,12 +95,12 @@ pub async fn generate(
     system_prompt: Option<String>,
     max_tokens: u32,
 ) -> Result<String, JsValue> {
-    let backend_guard = BACKEND.lock().unwrap();
+    let backend_guard = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
     let backend = backend_guard
         .as_ref()
         .ok_or_else(|| JsValue::from_str("Not initialized."))?;
 
-    let handle_guard = CURRENT_HANDLE.lock().unwrap();
+    let handle_guard = CURRENT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
     let handle = handle_guard
         .as_ref()
         .ok_or_else(|| JsValue::from_str("No model loaded."))?;
@@ -149,12 +149,12 @@ pub async fn stream_generate(
 ) -> Result<String, JsValue> {
     use futures::StreamExt;
 
-    let backend_guard = BACKEND.lock().unwrap();
+    let backend_guard = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
     let backend = backend_guard
         .as_ref()
         .ok_or_else(|| JsValue::from_str("Not initialized."))?;
 
-    let handle_guard = CURRENT_HANDLE.lock().unwrap();
+    let handle_guard = CURRENT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
     let handle = handle_guard
         .as_ref()
         .ok_or_else(|| JsValue::from_str("No model loaded."))?;
@@ -193,13 +193,13 @@ pub async fn stream_generate(
 #[wasm_bindgen]
 #[cfg(target_arch = "wasm32")]
 pub fn unload_model() -> Result<(), JsValue> {
-    let mut handle_guard = CURRENT_HANDLE.lock().unwrap();
+    let mut handle_guard = CURRENT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
     if handle_guard.is_none() {
         return Ok(());
     }
     *handle_guard = None;
 
-    let mut backend_guard = BACKEND.lock().unwrap();
+    let mut backend_guard = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
     *backend_guard = Some(CandleWasmBackend::new());
     Ok(())
 }

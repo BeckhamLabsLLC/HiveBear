@@ -56,13 +56,13 @@ impl AppState {
     /// Safe to call multiple times — no-ops if already running.
     pub fn start_mesh(&self) -> Result<(), String> {
         {
-            let existing = self.mesh_node.lock().unwrap();
+            let existing = self.mesh_node.lock().unwrap_or_else(|e| e.into_inner());
             if existing.as_ref().is_some_and(|n| n.is_running()) {
                 return Ok(());
             }
         }
 
-        let config = self.config.lock().unwrap();
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
         if !config.mesh.enabled {
             return Err("Mesh is disabled in settings".into());
         }
@@ -94,8 +94,9 @@ impl AppState {
             reputation_path,
         ));
 
-        let listen_addr: std::net::SocketAddr =
-            format!("0.0.0.0:{}", config.mesh.port).parse().unwrap();
+        let listen_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.mesh.port)
+            .parse()
+            .map_err(|e| format!("Invalid mesh port {}: {e}", config.mesh.port))?;
         let total_vram: u64 = self.profile.gpus.iter().map(|g| g.vram_bytes).sum();
 
         let local_info = hivebear_mesh::PeerInfo {
@@ -120,13 +121,17 @@ impl AppState {
         node.start_background(listen_addr, local_info);
         info!("Mesh node starting in background");
 
-        *self.mesh_node.lock().unwrap() = Some(node);
+        *self.mesh_node.lock().unwrap_or_else(|e| e.into_inner()) = Some(node);
         Ok(())
     }
 
     /// Stop the mesh node gracefully: deregister and disconnect all peers.
     pub async fn stop_mesh(&self) -> Result<(), String> {
-        let node = self.mesh_node.lock().unwrap().take();
+        let node = self
+            .mesh_node
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(node) = node {
             node.stop()
                 .await

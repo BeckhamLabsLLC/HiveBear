@@ -55,14 +55,14 @@ impl PeerHealthMonitor {
     /// Register a peer to monitor.
     pub fn track_peer(&self, peer_id: &NodeId) {
         let key = peer_id.0.to_bytes().to_vec();
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         states.entry(key).or_insert_with(PeerHealthState::new);
     }
 
     /// Record that a ping was sent to a peer.
     pub fn record_ping_sent(&self, peer_id: &NodeId) {
         let key = peer_id.0.to_bytes().to_vec();
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = states.get_mut(&key) {
             state.last_ping_sent = Some(Instant::now());
         }
@@ -71,7 +71,7 @@ impl PeerHealthMonitor {
     /// Record that a pong was received from a peer.
     pub fn record_pong_received(&self, peer_id: &NodeId) {
         let key = peer_id.0.to_bytes().to_vec();
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = states.get_mut(&key) {
             let now = Instant::now();
             if let Some(ping_time) = state.last_ping_sent {
@@ -91,7 +91,7 @@ impl PeerHealthMonitor {
     /// Record a ping failure (no pong received within timeout).
     pub fn record_ping_failure(&self, peer_id: &NodeId) {
         let key = peer_id.0.to_bytes().to_vec();
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = states.get_mut(&key) {
             state.consecutive_failures += 1;
             if state.consecutive_failures >= self.failure_threshold {
@@ -106,7 +106,7 @@ impl PeerHealthMonitor {
     /// Check if a peer is considered dead (exceeded failure threshold).
     pub fn is_dead(&self, peer_id: &NodeId) -> bool {
         let key = peer_id.0.to_bytes().to_vec();
-        let states = self.states.lock().unwrap();
+        let states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         states
             .get(&key)
             .map(|s| s.consecutive_failures >= self.failure_threshold)
@@ -115,7 +115,7 @@ impl PeerHealthMonitor {
 
     /// Get all peers that are considered dead.
     pub fn dead_peers(&self) -> Vec<Vec<u8>> {
-        let states = self.states.lock().unwrap();
+        let states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         states
             .iter()
             .filter(|(_, state)| state.consecutive_failures >= self.failure_threshold)
@@ -126,14 +126,14 @@ impl PeerHealthMonitor {
     /// Remove a peer from monitoring.
     pub fn remove_peer(&self, peer_id: &NodeId) {
         let key = peer_id.0.to_bytes().to_vec();
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         states.remove(&key);
     }
 
     /// Get the average latency for a peer in milliseconds.
     pub fn get_latency(&self, peer_id: &NodeId) -> Option<f64> {
         let key = peer_id.0.to_bytes().to_vec();
-        let states = self.states.lock().unwrap();
+        let states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         states.get(&key).map(|s| s.avg_latency_ms)
     }
 }

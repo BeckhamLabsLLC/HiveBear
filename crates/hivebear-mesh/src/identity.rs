@@ -108,17 +108,25 @@ impl NodeIdentity {
         bytes.extend_from_slice(&self.signing_key.to_bytes());
         bytes.extend_from_slice(&self.signing_key.verifying_key().to_bytes());
 
-        // Set restrictive permissions before writing
-        std::fs::write(path, &bytes)
-            .map_err(|e| MeshError::Config(format!("Failed to write identity file: {e}")))?;
-
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(path, perms).map_err(|e| {
-                MeshError::Config(format!("Failed to set identity file permissions: {e}"))
-            })?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| MeshError::Config(format!("Failed to create identity file: {e}")))?;
+            file.write_all(&bytes)
+                .map_err(|e| MeshError::Config(format!("Failed to write identity file: {e}")))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, &bytes)
+                .map_err(|e| MeshError::Config(format!("Failed to write identity file: {e}")))?;
         }
 
         Ok(())

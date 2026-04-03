@@ -13,6 +13,9 @@ pub mod swarm;
 pub mod transport;
 pub mod trust;
 
+#[cfg(all(feature = "insecure-dev", not(debug_assertions)))]
+compile_error!("The `insecure-dev` feature must not be used in release builds");
+
 // Re-export key types for convenience
 pub use backend::MeshBackend;
 pub use config::{MeshSecurityMode, MeshTier};

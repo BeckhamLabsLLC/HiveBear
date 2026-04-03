@@ -31,7 +31,7 @@ pub async fn load_model(
         .registry
         .resolve(&model_path)
         .await
-        .unwrap_or_else(|_| model_path.clone().into());
+        .map_err(|e| format!("Failed to resolve model '{}': {e}", model_path))?;
 
     let handle = state
         .orchestrator

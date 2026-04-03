@@ -36,7 +36,7 @@ pub fn run() {
             // Auto-start mesh if enabled and auto_join is configured
             {
                 let should_start = {
-                    let config = app_state.config.lock().unwrap();
+                    let config = app_state.config.lock().unwrap_or_else(|e| e.into_inner());
                     config.mesh.enabled && config.mesh.auto_join
                 };
                 if should_start {

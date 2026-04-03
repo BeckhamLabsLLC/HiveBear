@@ -75,14 +75,14 @@ impl CandleWasmBackend {
 
         self.loaded_models
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(handle.id, loaded);
 
         Ok(handle)
     }
 
     fn get_loaded_mut(&self) -> std::sync::MutexGuard<'_, HashMap<u64, LoadedModel>> {
-        self.loaded_models.lock().expect("lock poisoned")
+        self.loaded_models.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -157,7 +157,7 @@ impl InferenceBackend for CandleWasmBackend {
     async fn unload(&self, handle: &ModelHandle) -> Result<()> {
         self.loaded_models
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id);
         Ok(())
     }

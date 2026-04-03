@@ -99,13 +99,13 @@ impl Orchestrator {
     /// drain. Useful for the API layer to surface mesh-fallback messages
     /// to users.
     pub fn drain_events(&self) -> Vec<OrchestratorEvent> {
-        let mut events = self.events.lock().expect("lock poisoned");
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *events)
     }
 
     /// Emit an event (internal helper).
     fn emit_event(&self, event: OrchestratorEvent) {
-        let mut events = self.events.lock().expect("lock poisoned");
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         if events.len() >= 16 {
             events.remove(0);
         }
@@ -185,19 +185,22 @@ impl Orchestrator {
     ) {
         self.handle_backends
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(handle.id, engine);
 
-        self.model_info.lock().expect("lock poisoned").insert(
-            handle.id,
-            ModelInfo {
-                handle_id: handle.id,
-                model_path: path.display().to_string(),
-                engine,
-                context_length: config.context_length,
-                gpu_layers: config.offload.gpu_layers,
-            },
-        );
+        self.model_info
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                handle.id,
+                ModelInfo {
+                    handle_id: handle.id,
+                    model_path: path.display().to_string(),
+                    engine,
+                    context_length: config.context_length,
+                    gpu_layers: config.offload.gpu_layers,
+                },
+            );
     }
 
     /// Load a cloud model by name (e.g., "openai/gpt-4o").
@@ -217,19 +220,22 @@ impl Orchestrator {
 
         self.handle_backends
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(handle.id, backend.engine_id());
 
-        self.model_info.lock().expect("lock poisoned").insert(
-            handle.id,
-            ModelInfo {
-                handle_id: handle.id,
-                model_path: model_name.to_string(),
-                engine: backend.engine_id(),
-                context_length: 128_000,
-                gpu_layers: None,
-            },
-        );
+        self.model_info
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                handle.id,
+                ModelInfo {
+                    handle_id: handle.id,
+                    model_path: model_name.to_string(),
+                    engine: backend.engine_id(),
+                    context_length: 128_000,
+                    gpu_layers: None,
+                },
+            );
 
         Ok(handle)
     }
@@ -257,11 +263,11 @@ impl Orchestrator {
 
         self.handle_backends
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id);
         self.model_info
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&handle.id);
 
         Ok(())
@@ -271,7 +277,7 @@ impl Orchestrator {
     pub fn loaded_models(&self) -> Vec<ModelInfo> {
         self.model_info
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .cloned()
             .collect()
@@ -281,7 +287,7 @@ impl Orchestrator {
         let engine_id = self
             .handle_backends
             .lock()
-            .expect("lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&handle.id)
             .copied()
             .ok_or(InferenceError::InvalidHandle)?;
