@@ -1,14 +1,87 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as rawInvoke } from "@tauri-apps/api/core";
+import { notify } from "../components/Toast";
 import type {
   BenchmarkResult, ChatMessage, Config, Conversation, HardwareProfile, InstalledInfo,
   LoadedModel, MeshConfig, MeshStatus, ModelInfo, ModelMetadata, ModelRecommendation,
   PersistedMessage, SearchResult, StorageReport,
 } from "../types";
 
+// ── Error normalization + toast surfacing ──────────────────────────
+//
+// Every Tauri command can reject with one of:
+//   - a plain string (our CmdResult<T, String> convention)
+//   - a structured { code, message, ... } object
+//   - an Error instance (rare, usually from the IPC layer itself)
+//
+// We want a single place that turns all three into a user-friendly
+// message, shows a toast unless the caller opted out, and re-throws
+// so caller-side `.catch()` still works.
+
+export class InvokeError extends Error {
+  readonly command: string;
+  readonly code: string | null;
+  readonly raw: unknown;
+  constructor(command: string, message: string, code: string | null, raw: unknown) {
+    super(message);
+    this.command = command;
+    this.code = code;
+    this.raw = raw;
+  }
+}
+
+interface InvokeOptions {
+  /** Suppress the automatic toast — caller handles the error UX itself. */
+  silent?: boolean;
+  /** Override the user-facing message prefix (default: command name). */
+  label?: string;
+}
+
+function friendlyMessage(_command: string, code: string | null, message: string, label?: string): string {
+  // Map a few common Rust error codes/patterns to something actionable.
+  // Unknown codes fall through to the raw message.
+  const lower = (code ?? "").toLowerCase();
+  if (lower === "unauthenticated" || lower === "unauthorized") {
+    return "You're signed out. Open the Account page to sign back in.";
+  }
+  if (lower === "network" || /timed out|connection refused|unreachable/i.test(message)) {
+    return "Can't reach the coordinator. Check your connection and retry.";
+  }
+  if (/address.*in use|port.*in use|bind.*in use/i.test(message)) {
+    return "Required port is in use by another process (try closing other Ollama / HiveBear instances).";
+  }
+  if (/not ?found|no such/i.test(message) && !label) {
+    return message;
+  }
+  return label ? `${label}: ${message}` : message;
+}
+
+function normalize(command: string, err: unknown): InvokeError {
+  if (err instanceof InvokeError) return err;
+  if (typeof err === "string") return new InvokeError(command, err, null, err);
+  if (err instanceof Error) return new InvokeError(command, err.message, null, err);
+  if (err && typeof err === "object") {
+    const anyErr = err as { code?: unknown; message?: unknown };
+    const code = typeof anyErr.code === "string" ? anyErr.code : null;
+    const message = typeof anyErr.message === "string" ? anyErr.message : JSON.stringify(err);
+    return new InvokeError(command, message, code, err);
+  }
+  return new InvokeError(command, String(err), null, err);
+}
+
+function invoke<T>(command: string, args?: Record<string, unknown>, opts?: InvokeOptions): Promise<T> {
+  return (rawInvoke<T>(command, args) as Promise<T>).catch((e) => {
+    const ie = normalize(command, e);
+    if (!opts?.silent) {
+      notify(friendlyMessage(command, ie.code, ie.message, opts?.label), "error");
+    }
+    throw ie;
+  });
+}
+
 // ── Profile ────────────────────────────────────────────────────────
 
 export function getHardwareProfile(): Promise<HardwareProfile> {
-  return invoke("get_hardware_profile");
+  return invoke("get_hardware_profile", undefined, { label: "Hardware profile" });
 }
 
 export function getRecommendations(): Promise<ModelRecommendation[]> {
@@ -74,7 +147,7 @@ export function saveConfig(newConfig: Config): Promise<void> {
 // ── Mesh ──────────────────────────────────────────────────────────
 
 export function getMeshStatus(): Promise<MeshStatus> {
-  return invoke("get_mesh_status");
+  return invoke("get_mesh_status", undefined, { silent: true });
 }
 
 export function getMeshConfig(): Promise<MeshConfig> {
@@ -100,7 +173,8 @@ export function leaveMesh(): Promise<void> {
 }
 
 export function getMeshConnectionStatus(): Promise<MeshConnectionStatus> {
-  return invoke("get_mesh_connection_status");
+  // Called on a timer — silence toasts to avoid spamming on transient errors.
+  return invoke("get_mesh_connection_status", undefined, { silent: true });
 }
 
 // ── Chat Persistence ─────────────────────────────────────────────
@@ -171,7 +245,7 @@ export interface MeshEligibility {
 }
 
 export function getDeviceStatus(): Promise<DeviceStatus> {
-  return invoke("get_device_status");
+  return invoke("get_device_status", undefined, { silent: true });
 }
 
 export function canContributeToMesh(): Promise<MeshEligibility> {

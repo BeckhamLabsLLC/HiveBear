@@ -278,14 +278,38 @@ pub async fn start_server(config: ServerConfig) {
         .layer(cors)
         .with_state(state);
 
-    let listener =
-        tokio::net::TcpListener::bind(format!("{}:{}", config.bind_address, config.port))
-            .await
-            .expect("Failed to bind to port");
+    let (listener, bound_port) =
+        match bind_with_fallback(&config.bind_address, config.port, 10).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!(
+                    "\n❌ Could not start HiveBear API server: {e}\n\
+                     \n\
+                     Port {port} (and the next 10 after it) are all in use on {host}.\n\
+                     Another process is probably holding the port — common culprits:\n\
+                       • Another HiveBear or Ollama instance is already running\n\
+                       • A previous run didn't exit cleanly (try again in a few seconds)\n\
+                       • A different app is bound to the port\n\
+                     \n\
+                     You can pick a different port with `--port <N>` or stop the\n\
+                     conflicting process and try again.\n",
+                    port = config.port,
+                    host = config.bind_address,
+                );
+                return;
+            }
+        };
+
+    if bound_port != config.port {
+        println!(
+            "Port {} was busy — bound to {} instead.",
+            config.port, bound_port
+        );
+    }
 
     println!(
         "API server listening on http://{}:{}",
-        config.bind_address, config.port
+        config.bind_address, bound_port
     );
     println!("  OpenAI:  POST /v1/chat/completions");
     println!("  OpenAI:  GET  /v1/models");
@@ -309,7 +333,38 @@ pub async fn start_server(config: ServerConfig) {
         println!("  Auth: disabled (--no-auth)");
     }
 
-    axum::serve(listener, app).await.expect("Server error");
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!(error = %e, "API server exited with error");
+        eprintln!("API server exited with error: {e}");
+    }
+}
+
+/// Try to bind to the requested (host, port); if the port is taken, walk
+/// forward up to `max_attempts - 1` additional ports before giving up.
+/// Returns the bound listener and the actual port used.
+async fn bind_with_fallback(
+    host: &str,
+    port: u16,
+    max_attempts: u16,
+) -> Result<(tokio::net::TcpListener, u16), std::io::Error> {
+    let mut last_err: Option<std::io::Error> = None;
+    for offset in 0..max_attempts {
+        let try_port = match port.checked_add(offset) {
+            Some(p) => p,
+            None => break,
+        };
+        match tokio::net::TcpListener::bind(format!("{host}:{try_port}")).await {
+            Ok(listener) => return Ok((listener, try_port)),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AddrInUse, "no free port in range")
+    }))
 }
 
 // ── Legacy single-model start_server (used by `hivebear run --api`) ──

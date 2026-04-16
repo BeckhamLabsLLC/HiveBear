@@ -101,7 +101,7 @@ export default function Sidebar() {
           {collapsed ? <PanelLeft size={14} /> : <PanelLeftClose size={14} />}
         </button>
         {!collapsed && (
-          <span className="text-[10px] text-text-muted pr-1">v0.1.0</span>
+          <span className="text-[10px] text-text-muted pr-1">v{__APP_VERSION__}</span>
         )}
       </div>
     </motion.aside>

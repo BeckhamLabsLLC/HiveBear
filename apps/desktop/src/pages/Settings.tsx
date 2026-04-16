@@ -3,10 +3,11 @@ import { useConfig, useStorageReport } from "../hooks/useConfig";
 import { formatBytes } from "../types";
 import type { Config } from "../types";
 import { Card, Button, Toggle, Surface, Badge } from "../components/ui";
-import { Save, Loader, Eye, EyeOff, Cloud, Check, ChevronDown } from "lucide-react";
+import { Save, Loader, Eye, EyeOff, Cloud, Check, ChevronDown, ExternalLink } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 
-const SECTIONS = ["Inference", "Discovery", "Mesh", "Cloud", "Storage"] as const;
+const SECTIONS = ["Inference", "Discovery", "Mesh", "Cloud", "Storage", "About"] as const;
 type SectionId = typeof SECTIONS[number];
 
 export default function Settings() {
@@ -180,6 +181,11 @@ export default function Settings() {
               </div>
             ) : null}
           </SettingsSection>
+
+          {/* About */}
+          <SettingsSection id="About" refs={sectionRefs}>
+            <AboutSection />
+          </SettingsSection>
         </div>
       </div>
 
@@ -227,6 +233,53 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
         {hint && <p className="text-xs text-text-muted max-w-[280px]">{hint}</p>}
       </div>
       {children}
+    </div>
+  );
+}
+
+// ── About ──────────────────────────────────────────────────────────
+
+const ABOUT_LINKS: ReadonlyArray<{ label: string; url: string }> = [
+  { label: "About HiveBear", url: "https://hivebear.com/about" },
+  { label: "Privacy Policy", url: "https://hivebear.com/privacy" },
+  { label: "Terms of Service", url: "https://hivebear.com/terms" },
+  { label: "Release notes & downloads", url: "https://github.com/BeckhamLabsLLC/HiveBear/releases" },
+];
+
+function AboutSection() {
+  const handleOpen = useCallback((url: string) => {
+    openExternal(url).catch((e) => {
+      // Fallback: last-resort navigation if shell plugin unavailable (dev browser).
+      console.warn("Failed to open external link", e);
+      window.open(url, "_blank", "noopener,noreferrer");
+    });
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 text-sm">
+        <img src="/assets/logo.png" alt="" aria-hidden className="h-8 w-8 rounded-[var(--radius-md)]" />
+        <div>
+          <p className="font-medium text-text-primary">HiveBear Desktop</p>
+          <p className="font-mono text-xs text-text-muted">v{__APP_VERSION__}</p>
+        </div>
+      </div>
+      <ul className="space-y-1">
+        {ABOUT_LINKS.map((link) => (
+          <li key={link.url}>
+            <button
+              onClick={() => handleOpen(link.url)}
+              className="interactive-hover flex w-full items-center justify-between rounded-[var(--radius-md)] px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-overlay hover:text-text-primary"
+            >
+              <span>{link.label}</span>
+              <ExternalLink size={12} className="text-text-muted" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-text-muted leading-relaxed">
+        HiveBear is open-source software built by BeckhamLabs. Your device identity is a local Ed25519 keypair — it never leaves your machine.
+      </p>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useProfile, useRecommendations } from "../hooks/useProfile";
 import { useLoadedModels, useModelLoader } from "../hooks/useInference";
 import { useInstalledModels, useModelInstall } from "../hooks/useRegistry";
 import ResourceGauge from "../components/ResourceGauge";
+import MeshStatusPill from "../components/MeshStatusPill";
 import { Card, Button, Badge, Surface, EmptyState } from "../components/ui";
 import { formatBytes, formatToksPerSec } from "../types";
 import {
@@ -57,6 +58,12 @@ export default function Dashboard() {
   return (
     <Surface>
       <div className="space-y-6">
+        {/* ── Header ─────────────────────────────────────────────────────── */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-base font-semibold text-text-primary">Dashboard</h1>
+          <MeshStatusPill />
+        </div>
+
         {/* ── Zone 1: Hero / Status ─────────────────────────────────────── */}
 
         {!hasModels && !recsLoading && topRec ? (

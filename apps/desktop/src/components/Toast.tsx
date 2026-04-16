@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { X, CheckCircle2, AlertCircle, Info } from "lucide-react";
 
@@ -20,6 +20,16 @@ export function useToast() {
   return useContext(ToastContext);
 }
 
+// Imperative escape hatch for non-React code (e.g. the invoke() error
+// wrapper, which runs outside component render and can't use a hook).
+// Populated by ToastProvider; no-ops if toasts aren't mounted yet.
+let imperativeToast: ((message: string, type?: ToastType) => void) | null = null;
+
+export function notify(message: string, type: ToastType = "info") {
+  if (imperativeToast) imperativeToast(message, type);
+  else if (type === "error") console.error("[toast]", message);
+}
+
 let nextId = 0;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -32,6 +42,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4000);
   }, []);
+
+  useEffect(() => {
+    imperativeToast = toast;
+    return () => {
+      imperativeToast = null;
+    };
+  }, [toast]);
 
   const dismiss = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));

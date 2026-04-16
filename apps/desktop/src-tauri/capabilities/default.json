@@ -4,6 +4,13 @@
   "description": "HiveBear default permissions",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://hivebear.com/*" },
+        { "url": "https://github.com/BeckhamLabsLLC/*" }
+      ]
+    }
   ]
 }
