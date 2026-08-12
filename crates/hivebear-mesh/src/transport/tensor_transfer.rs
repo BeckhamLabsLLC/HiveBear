@@ -131,7 +131,9 @@ mod tests {
 
     #[test]
     fn test_f32_to_f16_roundtrip() {
-        let values: Vec<f32> = vec![1.0, -1.0, 0.5, 0.0, 3.14, 100.0, -0.001];
+        // 3.15, not 3.14 — these are arbitrary sample values, and 3.14 trips
+        // clippy::approx_constant. Using PI here would imply a meaning it lacks.
+        let values: Vec<f32> = vec![1.0, -1.0, 0.5, 0.0, 3.15, 100.0, -0.001];
         let f32_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
 
         let f16_bytes = convert_for_transfer(&f32_bytes, TensorDtype::F32, TensorDtype::F16);

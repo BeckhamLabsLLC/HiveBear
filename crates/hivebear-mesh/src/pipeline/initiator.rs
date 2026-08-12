@@ -211,12 +211,16 @@ impl PipelineInitiator {
             };
 
             // Send the initial activation through the pipeline.
+            // The dtype MUST come from what the engine actually produced
+            // (`activation.2`); hardcoding it mislabels the tensor and the receiving
+            // stage then decodes it at the wrong element width.
             let msg = MeshMessage::ActivationTensor {
                 session_id,
                 token_position: 0,
                 data: Bytes::from(activation.0.clone()),
                 shape: activation.1.clone(),
-                dtype: crate::transport::protocol::TensorDtype::F16,
+                dtype: crate::transport::protocol::TensorDtype::from_u8(activation.2)
+                    .unwrap_or(crate::transport::protocol::TensorDtype::F32),
             };
             if let Err(e) = self.transport.send(&first_worker, msg).await {
                 let _ = tx.send(Err(e)).await;
@@ -326,6 +330,12 @@ impl PipelineInitiator {
                     }
                 };
 
+                // Carry the engine's real dtype, not a hardcoded guess — a checkpoint
+                // restored with the wrong dtype resumes the session on garbage.
+                let activation_dtype =
+                    crate::transport::protocol::TensorDtype::from_u8(activation.2)
+                        .unwrap_or(crate::transport::protocol::TensorDtype::F32);
+
                 // Save checkpoint periodically for recovery
                 if (position + 1) % CHECKPOINT_INTERVAL == 0 {
                     self.checkpoints.save(
@@ -333,7 +343,7 @@ impl PipelineInitiator {
                         position + 1,
                         Bytes::from(activation.0.clone()),
                         activation.1.clone(),
-                        crate::transport::protocol::TensorDtype::F16,
+                        activation_dtype,
                         0, // source layer (initiator-side)
                     );
                     debug!("Saved checkpoint at token position {}", position + 1);
@@ -344,7 +354,7 @@ impl PipelineInitiator {
                     token_position: position + 1,
                     data: Bytes::from(activation.0),
                     shape: activation.1,
-                    dtype: crate::transport::protocol::TensorDtype::F16,
+                    dtype: activation_dtype,
                 };
                 if let Err(e) = self.transport.send(&first_worker, msg).await {
                     let _ = tx.send(Err(e)).await;

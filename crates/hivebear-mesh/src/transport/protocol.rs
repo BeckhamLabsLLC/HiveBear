@@ -24,20 +24,33 @@ impl TensorDtype {
         }
     }
 
-    /// Encode as a `u8` tag for cross-boundary transfer (e.g. pipeline handler).
+    /// Encode as a `u8` tag for the [`MeshPipelineHandler::forward_layers`] boundary.
+    ///
+    /// This tag space is defined by `MeshPipelineHandler`, NOT by the wire format —
+    /// `TensorDtype` travels between peers as a serde enum. The mapping below must
+    /// stay identical to the one in `hivebear-cli`'s `CliPipelineHandler`:
+    /// `0 = F32, 1 = F16, 2 = BF16`.
+    ///
+    /// These previously read `F16 => 0, F32 => 1`, the inverse of the handler's
+    /// mapping, which silently swapped F16 and F32 on every pipeline hop in both
+    /// directions — a receiving stage would read F32 activations 2 bytes at a time.
+    ///
+    /// [`MeshPipelineHandler::forward_layers`]: crate::protocol::MeshPipelineHandler::forward_layers
     pub fn to_u8(self) -> u8 {
         match self {
-            TensorDtype::F16 => 0,
-            TensorDtype::F32 => 1,
+            TensorDtype::F32 => 0,
+            TensorDtype::F16 => 1,
             TensorDtype::BF16 => 2,
         }
     }
 
-    /// Decode from a `u8` tag. Returns `None` for unknown values.
+    /// Decode a `u8` tag from the pipeline-handler boundary. `None` for unknown values.
+    ///
+    /// Must mirror [`TensorDtype::to_u8`].
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
-            0 => Some(TensorDtype::F16),
-            1 => Some(TensorDtype::F32),
+            0 => Some(TensorDtype::F32),
+            1 => Some(TensorDtype::F16),
             2 => Some(TensorDtype::BF16),
             _ => None,
         }
@@ -272,6 +285,40 @@ pub fn decode(data: &[u8]) -> crate::error::Result<MeshMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the pipeline-handler tag space: `0 = F32, 1 = F16, 2 = BF16`.
+    ///
+    /// These exact values are duplicated in `hivebear-cli`'s `CliPipelineHandler`,
+    /// which cannot import this enum. They were transposed for F16/F32 once already,
+    /// silently corrupting every multi-stage pipeline forward pass, so assert the
+    /// literals rather than only the round-trip.
+    #[test]
+    fn tensor_dtype_u8_tags_match_pipeline_handler() {
+        assert_eq!(TensorDtype::F32.to_u8(), 0);
+        assert_eq!(TensorDtype::F16.to_u8(), 1);
+        assert_eq!(TensorDtype::BF16.to_u8(), 2);
+
+        assert_eq!(TensorDtype::from_u8(0), Some(TensorDtype::F32));
+        assert_eq!(TensorDtype::from_u8(1), Some(TensorDtype::F16));
+        assert_eq!(TensorDtype::from_u8(2), Some(TensorDtype::BF16));
+        assert_eq!(TensorDtype::from_u8(3), None);
+    }
+
+    #[test]
+    fn tensor_dtype_u8_roundtrips() {
+        for dt in [TensorDtype::F32, TensorDtype::F16, TensorDtype::BF16] {
+            assert_eq!(TensorDtype::from_u8(dt.to_u8()), Some(dt));
+        }
+    }
+
+    /// A mislabelled dtype makes the receiver read the wrong element width, so the
+    /// tag and the byte size must stay consistent.
+    #[test]
+    fn tensor_dtype_byte_sizes() {
+        assert_eq!(TensorDtype::F32.byte_size(), 4);
+        assert_eq!(TensorDtype::F16.byte_size(), 2);
+        assert_eq!(TensorDtype::BF16.byte_size(), 2);
+    }
 
     #[test]
     fn test_ping_pong_roundtrip() {

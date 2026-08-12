@@ -356,7 +356,7 @@ mod tests {
     fn test_render_llama3() {
         let messages = vec![
             ChatMessage::System("Be helpful.".into()),
-            ChatMessage::user_text("Hi".into()),
+            ChatMessage::user_text("Hi"),
         ];
         let prompt = render(TemplateFormat::Llama3, &messages, &[]);
         assert!(prompt.contains("<|begin_of_text|>"));
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_render_chatml() {
-        let messages = vec![ChatMessage::user_text("Hello".into())];
+        let messages = vec![ChatMessage::user_text("Hello")];
         let prompt = render(TemplateFormat::ChatML, &messages, &[]);
         assert!(prompt.contains("<|im_start|>user"));
         assert!(prompt.contains("Hello"));
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_render_with_tools() {
-        let messages = vec![ChatMessage::user_text("Search for cats".into())];
+        let messages = vec![ChatMessage::user_text("Search for cats")];
         let tools = vec![ToolDefinition {
             name: "search".into(),
             description: "Search the web".into(),

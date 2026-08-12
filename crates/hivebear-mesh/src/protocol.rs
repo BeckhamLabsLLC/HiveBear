@@ -90,6 +90,24 @@ pub trait MeshPipelineHandler: Send + Sync {
 
     /// Run a forward pass through loaded layers.
     /// Returns (output_data, output_shape, output_dtype).
+    ///
+    /// # dtype tag space
+    ///
+    /// Both the `dtype` argument and the returned `output_dtype` use this encoding:
+    ///
+    /// | tag | meaning |
+    /// |-----|---------|
+    /// | 0   | F32     |
+    /// | 1   | F16     |
+    /// | 2   | BF16    |
+    ///
+    /// [`TensorDtype::to_u8`] / [`TensorDtype::from_u8`] convert to and from it, and
+    /// implementors MUST agree with them. The two sides previously disagreed (the
+    /// mesh side had F16 and F32 transposed), which silently corrupted every
+    /// multi-stage pipeline forward pass.
+    ///
+    /// [`TensorDtype::to_u8`]: crate::transport::protocol::TensorDtype::to_u8
+    /// [`TensorDtype::from_u8`]: crate::transport::protocol::TensorDtype::from_u8
     async fn forward_layers(
         &self,
         activation_data: Vec<u8>,

@@ -106,7 +106,7 @@ async fn cmd_login(email_arg: Option<String>) {
 
     let config = Config::load();
     let server = get_server_url(&config);
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
 
     match client
         .post(format!("{server}/auth/login"))
@@ -158,7 +158,7 @@ async fn cmd_activate() {
     println!("Device fingerprint: {}", pubkey_hex[..16].cyan());
 
     let server = get_server_url(&config);
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
 
     // Step 1: Challenge
     let challenge_resp = match client
@@ -286,7 +286,7 @@ async fn cmd_status() {
 
     if let Some(ref jwt) = config.account.jwt_token {
         let server = get_server_url(&config);
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         if let Ok(resp) = client
             .get(format!("{server}/billing/status"))
             .header("Authorization", format!("Bearer {jwt}"))
@@ -324,7 +324,7 @@ async fn cmd_usage() {
     };
 
     let server = get_server_url(&config);
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
 
     match client
         .get(format!("{server}/usage/summary"))
@@ -376,7 +376,7 @@ async fn cmd_upgrade(plan: String) {
     };
 
     let server = get_server_url(&config);
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
 
     match client
         .post(format!("{server}/billing/create-checkout"))
@@ -446,7 +446,7 @@ async fn cmd_api_keys(action: ApiKeyAction) {
     };
 
     let server = get_server_url(&config);
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
 
     match action {
         ApiKeyAction::List => {

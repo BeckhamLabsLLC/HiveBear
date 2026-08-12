@@ -4,6 +4,25 @@ mod api;
 mod pipeline_handler;
 mod registry_commands;
 
+/// Build an HTTP client for talking to the coordination server.
+///
+/// `reqwest::Client::new()` applies **no** request timeout, so an unresponsive or
+/// black-holed coordinator would hang a CLI command forever with no output — the
+/// worst failure mode for a command-line tool. Every outbound call goes through
+/// here so that cannot happen.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        // Fall back to the default client rather than aborting the command: a
+        // missing timeout is still better than refusing to run.
+        .unwrap_or_else(|e| {
+            tracing::warn!("Falling back to default HTTP client: {e}");
+            reqwest::Client::new()
+        })
+}
+
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use futures::StreamExt;
@@ -685,7 +704,7 @@ async fn fetch_community_data(
         config.mesh.coordination_server, fp.gpu_class, fp.ram_gb_bucket, fp.platform_arch
     );
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
             #[derive(serde::Deserialize)]
@@ -735,7 +754,7 @@ async fn share_benchmark_result(
     };
 
     let url = format!("{}/benchmarks", config.mesh.coordination_server);
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let mut req = client.post(&url).json(&submission);
     if let Some(ref token) = config.account.jwt_token {
