@@ -255,6 +255,48 @@ pub enum MeshMessage {
     },
 }
 
+impl MeshMessage {
+    /// Session this message belongs to, when it has one.
+    ///
+    /// Used to route inbound messages to the task that owns the session
+    /// rather than dumping everything into one shared queue, where
+    /// concurrent consumers steal each other's messages.
+    ///
+    /// Swarm-scoped messages deliberately return `None`: a swarm id is not a
+    /// session id, and swarm management is handled by the node, not by a
+    /// per-session task.
+    pub fn session_id(&self) -> Option<Uuid> {
+        match self {
+            MeshMessage::AssignLayers { session_id, .. }
+            | MeshMessage::AssignLayersAck { session_id, .. }
+            | MeshMessage::ActivationTensor { session_id, .. }
+            | MeshMessage::Logits { session_id, .. }
+            | MeshMessage::VerifyChallenge { session_id, .. }
+            | MeshMessage::VerifyResponse { session_id, .. }
+            | MeshMessage::ReleaseSession { session_id }
+            | MeshMessage::InferenceRequest { session_id, .. }
+            | MeshMessage::InferenceToken { session_id, .. }
+            | MeshMessage::InferenceComplete { session_id, .. }
+            | MeshMessage::PipelineHeartbeat { session_id, .. }
+            | MeshMessage::PeerLeaving { session_id, .. }
+            | MeshMessage::CompressedActivationTensor { session_id, .. }
+            | MeshMessage::DraftTokens { session_id, .. }
+            | MeshMessage::VerifyDraft { session_id, .. } => Some(*session_id),
+
+            MeshMessage::Error { session_id, .. } => *session_id,
+
+            MeshMessage::Hello { .. }
+            | MeshMessage::HelloAck { .. }
+            | MeshMessage::Ping { .. }
+            | MeshMessage::Pong { .. }
+            | MeshMessage::SwarmInvite { .. }
+            | MeshMessage::SwarmInviteAck { .. }
+            | MeshMessage::SwarmHeartbeat { .. }
+            | MeshMessage::SwarmRebalance { .. } => None,
+        }
+    }
+}
+
 /// Current protocol version.
 pub const PROTOCOL_VERSION: u32 = 2;
 

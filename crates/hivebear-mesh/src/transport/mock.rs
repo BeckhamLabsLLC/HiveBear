@@ -1,14 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use dashmap::DashMap;
-use tokio::sync::{mpsc, Mutex};
-
+use super::inbox::Inbox;
 use super::protocol::MeshMessage;
 use super::MeshTransport;
 use crate::error::{MeshError, Result};
 use crate::peer::NodeId;
+use async_trait::async_trait;
+use dashmap::DashMap;
 
 /// In-process mock transport for testing.
 ///
@@ -16,18 +15,18 @@ use crate::peer::NodeId;
 /// nodes within the same process. No real networking involved.
 pub struct MockTransport {
     local_id: NodeId,
-    /// Outbound channels: NodeId -> sender to that peer's inbox.
-    peers: DashMap<Vec<u8>, mpsc::UnboundedSender<(NodeId, MeshMessage)>>,
-    /// Inbound channel: receives messages from all connected peers.
-    inbox_tx: mpsc::UnboundedSender<(NodeId, MeshMessage)>,
-    inbox_rx: Mutex<mpsc::UnboundedReceiver<(NodeId, MeshMessage)>>,
+    /// Outbound routes: NodeId -> that peer's inbox.
+    peers: DashMap<Vec<u8>, Arc<Inbox>>,
+    /// Our own inbox. Shares the session-routing logic with QuicTransport so
+    /// tests exercise the same demultiplexing as production.
+    inbox: Arc<Inbox>,
     /// Shared registry for mock peer discovery (addr -> inbox sender).
     registry: Arc<MockRegistry>,
 }
 
 /// Shared registry allowing mock nodes to find each other by address.
 pub struct MockRegistry {
-    listeners: DashMap<String, (NodeId, mpsc::UnboundedSender<(NodeId, MeshMessage)>)>,
+    listeners: DashMap<String, (NodeId, Arc<Inbox>)>,
 }
 
 impl MockRegistry {
@@ -48,12 +47,10 @@ impl Default for MockRegistry {
 
 impl MockTransport {
     pub fn new(local_id: NodeId, registry: Arc<MockRegistry>) -> Self {
-        let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
         Self {
             local_id,
             peers: DashMap::new(),
-            inbox_tx,
-            inbox_rx: Mutex::new(inbox_rx),
+            inbox: Arc::new(Inbox::new()),
             registry,
         }
     }
@@ -67,21 +64,18 @@ impl MockTransport {
 impl MeshTransport for MockTransport {
     async fn send(&self, peer: &NodeId, msg: MeshMessage) -> Result<()> {
         let key = Self::node_key(peer);
-        let sender = self
+        let target = self
             .peers
             .get(&key)
             .ok_or_else(|| MeshError::PeerDisconnected(peer.to_string()))?;
-        sender
-            .send((self.local_id.clone(), msg))
-            .map_err(|_| MeshError::PeerDisconnected(peer.to_string()))?;
+        if !target.deliver(self.local_id.clone(), msg) {
+            return Err(MeshError::PeerDisconnected(peer.to_string()));
+        }
         Ok(())
     }
 
     async fn recv(&self) -> Result<(NodeId, MeshMessage)> {
-        let mut rx = self.inbox_rx.lock().await;
-        rx.recv()
-            .await
-            .ok_or_else(|| MeshError::Transport("All senders dropped".into()))
+        self.inbox.recv().await
     }
 
     async fn connect(&self, addr: SocketAddr) -> Result<NodeId> {
@@ -115,7 +109,7 @@ impl MeshTransport for MockTransport {
         let addr_key = addr.to_string();
         self.registry
             .listeners
-            .insert(addr_key, (self.local_id.clone(), self.inbox_tx.clone()));
+            .insert(addr_key, (self.local_id.clone(), Arc::clone(&self.inbox)));
         Ok(())
     }
 
@@ -127,6 +121,14 @@ impl MeshTransport for MockTransport {
     fn peer_count(&self) -> usize {
         self.peers.len()
     }
+
+    fn subscribe_session(&self, session_id: uuid::Uuid) -> super::inbox::SessionReceiver {
+        self.inbox.subscribe(session_id)
+    }
+
+    fn unsubscribe_session(&self, session_id: &uuid::Uuid) {
+        self.inbox.unsubscribe(session_id);
+    }
 }
 
 /// Create a directly-linked pair of MockTransports for testing.
@@ -137,22 +139,17 @@ pub fn create_linked_pair() -> (MockTransport, MockTransport) {
     let (id_a, _key_a) = NodeId::generate();
     let (id_b, _key_b) = NodeId::generate();
 
-    let (inbox_a_tx, inbox_a_rx) = mpsc::unbounded_channel();
-    let (inbox_b_tx, inbox_b_rx) = mpsc::unbounded_channel();
-
     let transport_a = MockTransport {
         local_id: id_a.clone(),
         peers: DashMap::new(),
-        inbox_tx: inbox_a_tx,
-        inbox_rx: Mutex::new(inbox_a_rx),
+        inbox: Arc::new(Inbox::new()),
         registry: registry.clone(),
     };
 
     let transport_b = MockTransport {
         local_id: id_b.clone(),
         peers: DashMap::new(),
-        inbox_tx: inbox_b_tx,
-        inbox_rx: Mutex::new(inbox_b_rx),
+        inbox: Arc::new(Inbox::new()),
         registry,
     };
 
@@ -160,12 +157,12 @@ pub fn create_linked_pair() -> (MockTransport, MockTransport) {
     let key_b = MockTransport::node_key(&id_b);
     transport_a
         .peers
-        .insert(key_b, transport_b.inbox_tx.clone());
+        .insert(key_b, Arc::clone(&transport_b.inbox));
 
     let key_a = MockTransport::node_key(&id_a);
     transport_b
         .peers
-        .insert(key_a, transport_a.inbox_tx.clone());
+        .insert(key_a, Arc::clone(&transport_a.inbox));
 
     (transport_a, transport_b)
 }

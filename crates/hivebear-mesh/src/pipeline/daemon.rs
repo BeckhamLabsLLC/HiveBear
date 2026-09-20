@@ -22,6 +22,12 @@ pub struct MeshWorkerDaemon<H: MeshInferenceHandler> {
     handler: Arc<H>,
     transport: Arc<dyn MeshTransport>,
     pipeline_handler: Option<Arc<dyn MeshPipelineHandler>>,
+    /// Who owns the pipeline layers currently loaded, and under which session.
+    ///
+    /// `ReleaseSession` used to unload unconditionally, so any peer that could
+    /// reach this node could evict another peer's loaded layers just by
+    /// guessing — or not even guessing, since the id was not checked at all.
+    active_pipeline_session: dashmap::DashMap<Uuid, Vec<u8>>,
 }
 
 impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
@@ -30,6 +36,7 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
             handler,
             transport,
             pipeline_handler: None,
+            active_pipeline_session: dashmap::DashMap::new(),
         }
     }
 
@@ -43,6 +50,7 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
             handler,
             transport,
             pipeline_handler: Some(pipeline_handler),
+            active_pipeline_session: dashmap::DashMap::new(),
         }
     }
 
@@ -96,8 +104,23 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                         .await;
                 }
                 MeshMessage::ReleaseSession { session_id } => {
+                    // Only the peer that opened the session may close it.
+                    let owner = self.active_pipeline_session.get(&session_id);
+                    let owned_by_sender = owner
+                        .as_ref()
+                        .is_some_and(|entry| entry.value() == &peer_id.0.to_bytes().to_vec());
+                    drop(owner);
+
+                    if !owned_by_sender {
+                        warn!(
+                            "MeshWorkerDaemon: ignoring ReleaseSession for {session_id} from \
+                             {peer_id}, which does not own it"
+                        );
+                        continue;
+                    }
+
                     info!("MeshWorkerDaemon: session {session_id} released by {peer_id}");
-                    // Also unload pipeline layers if any were loaded
+                    self.active_pipeline_session.remove(&session_id);
                     if let Some(ref ph) = self.pipeline_handler {
                         let ph = ph.clone();
                         tokio::spawn(async move {
@@ -120,6 +143,10 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                              layers {}..{} of {total_layers} (session {session_id})",
                             layer_range.start, layer_range.end
                         );
+                        // Remember who owns this session so only they can
+                        // release it later.
+                        self.active_pipeline_session
+                            .insert(session_id, peer_id.0.to_bytes().to_vec());
                         let ph = ph.clone();
                         let transport = self.transport.clone();
                         tokio::spawn(async move {

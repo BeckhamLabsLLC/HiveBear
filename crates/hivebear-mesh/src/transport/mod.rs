@@ -1,4 +1,5 @@
 pub mod compression;
+pub mod inbox;
 pub mod mock;
 pub mod protocol;
 pub mod quic;
@@ -10,7 +11,9 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::peer::NodeId;
+use inbox::SessionReceiver;
 use protocol::MeshMessage;
+use uuid::Uuid;
 
 /// Abstraction over the data transport layer.
 ///
@@ -37,4 +40,16 @@ pub trait MeshTransport: Send + Sync {
 
     /// Number of currently connected peers.
     fn peer_count(&self) -> usize;
+
+    /// Claim a session's inbound messages.
+    ///
+    /// Messages carrying `session_id` are delivered to the returned queue
+    /// rather than the shared one that [`Self::recv`] drains. Without this,
+    /// concurrent consumers steal each other's messages — see
+    /// [`inbox::Inbox`]. Callers must [`Self::unsubscribe_session`] when the
+    /// session ends.
+    fn subscribe_session(&self, session_id: Uuid) -> SessionReceiver;
+
+    /// Release a session claimed with [`Self::subscribe_session`].
+    fn unsubscribe_session(&self, session_id: &Uuid);
 }

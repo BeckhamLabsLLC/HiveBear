@@ -15,6 +15,38 @@ use crate::transport::MeshTransport;
 use crate::trust::{ReputationManager, TrustVerifier};
 use hivebear_inference::Token;
 
+/// How long to wait for the next message in a replication session before
+/// declaring the peer dead. Generous, because the first token can be behind a
+/// cold model load on the peer's side — but finite, because the previous
+/// behaviour was to block forever with no output.
+const REPLICATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long to wait for every worker to acknowledge a layer assignment.
+/// Covers a cold model load on the slowest peer.
+const SETUP_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Releases a session subscription when it goes out of scope, including on
+/// the early-return paths.
+struct SessionGuard {
+    transport: Arc<dyn MeshTransport>,
+    session_id: Uuid,
+}
+
+impl SessionGuard {
+    fn new(transport: Arc<dyn MeshTransport>, session_id: Uuid) -> Self {
+        Self {
+            transport,
+            session_id,
+        }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.transport.unsubscribe_session(&self.session_id);
+    }
+}
+
 /// How often to save activation checkpoints (every N tokens).
 const CHECKPOINT_INTERVAL: u32 = 10;
 
@@ -110,12 +142,33 @@ impl PipelineInitiator {
             self.transport.send(&assignment.peer_id, msg).await?;
         }
 
-        // Wait for all workers to acknowledge
+        // Wait for all workers to acknowledge.
+        //
+        // Subscribed rather than sharing the general queue: acks used to be
+        // taken by whatever else was calling recv(), and the `_ =>` arm below
+        // silently discarded anything that arrived here instead. Bounded,
+        // because a worker that never acks used to hang setup forever.
         let mut acks_received = 0;
         let expected = self.plan.peer_count();
+        let mut session_rx = self.transport.subscribe_session(self.plan.session_id);
+        let _guard = SessionGuard::new(self.transport.clone(), self.plan.session_id);
 
         while acks_received < expected {
-            let (peer_id, msg) = self.transport.recv().await?;
+            let (peer_id, msg) =
+                match tokio::time::timeout(SETUP_ACK_TIMEOUT, session_rx.recv()).await {
+                    Ok(Some(pair)) => pair,
+                    Ok(None) => {
+                        return Err(MeshError::Pipeline(
+                            "Session queue closed while waiting for worker acknowledgements".into(),
+                        ))
+                    }
+                    Err(_) => {
+                        return Err(MeshError::Pipeline(format!(
+                            "Only {acks_received} of {expected} workers acknowledged within {}s",
+                            SETUP_ACK_TIMEOUT.as_secs()
+                        )))
+                    }
+                };
             match msg {
                 MeshMessage::AssignLayersAck {
                     session_id,
@@ -149,6 +202,30 @@ impl PipelineInitiator {
 
         info!("All {} workers ready", expected);
         Ok(())
+    }
+
+    /// Tell every assigned worker to drop this session's resources.
+    ///
+    /// Without this, each mesh load left a model resident on every peer for
+    /// the rest of their process lifetime — `MeshBackend::unload` was a
+    /// no-op, so nothing ever released them.
+    pub async fn teardown(&self) {
+        for assignment in &self.plan.assignments {
+            let msg = MeshMessage::ReleaseSession {
+                session_id: self.plan.session_id,
+            };
+            if let Err(e) = self.transport.send(&assignment.peer_id, msg).await {
+                debug!(
+                    "Could not release session {} on peer {}: {e}",
+                    self.plan.session_id, assignment.peer_id
+                );
+            }
+        }
+    }
+
+    /// Session this initiator's plan runs under.
+    pub fn session_id(&self) -> Uuid {
+        self.plan.session_id
     }
 
     /// Run the distributed pipeline, yielding tokens through the returned channel.
@@ -410,6 +487,13 @@ impl PipelineInitiator {
             }
         };
 
+        // Claim this session's inbound traffic *before* sending, so a fast
+        // reply cannot land on the general queue and be consumed by another
+        // task. Previously this loop shared one queue with the worker daemon
+        // and the CLI, so they stole each other's messages and `_ => continue`
+        // dropped the stolen ones silently.
+        let mut session_rx = self.transport.subscribe_session(session_id);
+
         tokio::spawn(async move {
             info!("Sending inference request to peer {target_peer} (session {session_id})");
 
@@ -429,13 +513,40 @@ impl PipelineInitiator {
                         "Failed to send inference request: {e}"
                     ))))
                     .await;
+                self.transport.unsubscribe_session(&session_id);
                 return;
             }
 
-            // Receive streamed tokens
+            // Receive streamed tokens. Everything arriving here belongs to
+            // this session, so there is nothing to filter out.
             loop {
-                match self.transport.recv().await {
-                    Ok((
+                let next = tokio::time::timeout(REPLICATION_IDLE_TIMEOUT, session_rx.recv()).await;
+
+                let (peer_id, msg) = match next {
+                    // An unresponsive peer used to hang this loop forever with
+                    // no output; the UI just sat there.
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(MeshError::Pipeline(format!(
+                                "Peer {target_peer} sent nothing for {}s; giving up on this session",
+                                REPLICATION_IDLE_TIMEOUT.as_secs()
+                            ))))
+                            .await;
+                        break;
+                    }
+                    Ok(None) => {
+                        let _ = tx
+                            .send(Err(MeshError::Transport(
+                                "Session queue closed before completion".into(),
+                            )))
+                            .await;
+                        break;
+                    }
+                    Ok(Some(pair)) => pair,
+                };
+
+                match (peer_id, msg) {
+                    (
                         peer_id,
                         MeshMessage::InferenceToken {
                             session_id: sid,
@@ -443,7 +554,7 @@ impl PipelineInitiator {
                             token_id,
                             is_done,
                         },
-                    )) if sid == session_id => {
+                    ) if sid == session_id => {
                         debug!("Token from {peer_id}: {text:?}");
                         let token = Token {
                             text,
@@ -458,34 +569,35 @@ impl PipelineInitiator {
                             break;
                         }
                     }
-                    Ok((
+                    (
                         _,
                         MeshMessage::InferenceComplete {
                             session_id: sid,
                             error: Some(err),
                             ..
                         },
-                    )) if sid == session_id => {
+                    ) if sid == session_id => {
                         let _ = tx.send(Err(MeshError::Pipeline(err))).await;
                         break;
                     }
-                    Ok((
+                    (
                         _,
                         MeshMessage::InferenceComplete {
                             session_id: sid, ..
                         },
-                    )) if sid == session_id => {
+                    ) if sid == session_id => {
                         break; // Done
                     }
-                    Ok((_, MeshMessage::Error { message, .. })) => {
+                    (_, MeshMessage::Error { message, .. }) => {
                         let _ = tx.send(Err(MeshError::Pipeline(message))).await;
                         break;
                     }
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                        break;
+                    (peer_id, other) => {
+                        // Routed to this session but not part of the
+                        // replication protocol. Worth knowing about rather
+                        // than discarding in silence.
+                        debug!("Ignoring {other:?} from {peer_id} on session {session_id}");
                     }
-                    _ => continue, // Ignore unrelated messages
                 }
             }
 
@@ -494,6 +606,7 @@ impl PipelineInitiator {
                 .transport
                 .send(&target_peer, MeshMessage::ReleaseSession { session_id })
                 .await;
+            self.transport.unsubscribe_session(&session_id);
         });
 
         rx

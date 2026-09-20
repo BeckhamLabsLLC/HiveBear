@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+use super::inbox::Inbox;
 use super::protocol::{self, MeshMessage, PROTOCOL_VERSION};
 use super::MeshTransport;
 use crate::config::MeshSecurityMode;
@@ -23,8 +24,7 @@ pub struct QuicTransport {
     /// Connected peers: NodeId -> QUIC connection.
     connections: DashMap<Vec<u8>, quinn::Connection>,
     /// Inbound message channel.
-    inbox_tx: mpsc::UnboundedSender<(NodeId, MeshMessage)>,
-    inbox_rx: Mutex<mpsc::UnboundedReceiver<(NodeId, MeshMessage)>>,
+    inbox: Arc<Inbox>,
     /// Security mode for TLS certificate verification.
     security_mode: MeshSecurityMode,
     /// Optional path to persist TOFU certificate pins across restarts.
@@ -41,13 +41,11 @@ impl QuicTransport {
         if security_mode == MeshSecurityMode::Insecure {
             warn!("⚠️  Mesh security mode is INSECURE. Certificate verification is disabled. Do NOT use in production!");
         }
-        let (inbox_tx, inbox_rx) = mpsc::unbounded_channel();
         Self {
             local_id,
             endpoint: Mutex::new(None),
             connections: DashMap::new(),
-            inbox_tx,
-            inbox_rx: Mutex::new(inbox_rx),
+            inbox: Arc::new(Inbox::new()),
             security_mode,
             tofu_pins_path,
         }
@@ -139,12 +137,7 @@ impl QuicTransport {
     }
 
     /// Spawn a task that reads messages from a QUIC connection.
-    fn spawn_reader(
-        &self,
-        conn: quinn::Connection,
-        peer_id: NodeId,
-        inbox: mpsc::UnboundedSender<(NodeId, MeshMessage)>,
-    ) {
+    fn spawn_reader(&self, conn: quinn::Connection, peer_id: NodeId, inbox: Arc<Inbox>) {
         tokio::spawn(async move {
             loop {
                 match conn.accept_uni().await {
@@ -158,7 +151,7 @@ impl QuicTransport {
                         };
                         match protocol::decode(&data) {
                             Ok(msg) => {
-                                if inbox.send((peer_id.clone(), msg)).is_err() {
+                                if !inbox.deliver(peer_id.clone(), msg) {
                                     break;
                                 }
                             }
@@ -200,10 +193,7 @@ impl MeshTransport for QuicTransport {
     }
 
     async fn recv(&self) -> Result<(NodeId, MeshMessage)> {
-        let mut rx = self.inbox_rx.lock().await;
-        rx.recv()
-            .await
-            .ok_or_else(|| MeshError::Transport("All senders dropped".into()))
+        self.inbox.recv().await
     }
 
     async fn connect(&self, addr: SocketAddr) -> Result<NodeId> {
@@ -263,7 +253,7 @@ impl MeshTransport for QuicTransport {
 
         let key = Self::node_key(&peer_id);
         self.connections.insert(key, conn.clone());
-        self.spawn_reader(conn, peer_id.clone(), self.inbox_tx.clone());
+        self.spawn_reader(conn, peer_id.clone(), Arc::clone(&self.inbox));
 
         info!("Connected to peer {peer_id}");
         Ok(peer_id)
@@ -287,7 +277,7 @@ impl MeshTransport for QuicTransport {
 
         info!("Listening on {addr}");
 
-        let inbox_tx = self.inbox_tx.clone();
+        let inbox = Arc::clone(&self.inbox);
         let connections = self.connections.clone();
         let local_id = self.local_id.clone();
 
@@ -295,7 +285,7 @@ impl MeshTransport for QuicTransport {
         let endpoint_clone = endpoint.clone();
         tokio::spawn(async move {
             while let Some(incoming) = endpoint_clone.accept().await {
-                let inbox_tx = inbox_tx.clone();
+                let inbox = Arc::clone(&inbox);
                 let connections = connections.clone();
                 let local_id = local_id.clone();
 
@@ -348,13 +338,10 @@ impl MeshTransport for QuicTransport {
                                                             Ok(data) => {
                                                                 match protocol::decode(&data) {
                                                                     Ok(msg) => {
-                                                                        if inbox_tx
-                                                                            .send((
-                                                                                peer_id.clone(),
-                                                                                msg,
-                                                                            ))
-                                                                            .is_err()
-                                                                        {
+                                                                        if !inbox.deliver(
+                                                                            peer_id.clone(),
+                                                                            msg,
+                                                                        ) {
                                                                             break;
                                                                         }
                                                                     }
@@ -404,6 +391,14 @@ impl MeshTransport for QuicTransport {
 
     fn peer_count(&self) -> usize {
         self.connections.len()
+    }
+
+    fn subscribe_session(&self, session_id: uuid::Uuid) -> super::inbox::SessionReceiver {
+        self.inbox.subscribe(session_id)
+    }
+
+    fn unsubscribe_session(&self, session_id: &uuid::Uuid) {
+        self.inbox.unsubscribe(session_id);
     }
 }
 

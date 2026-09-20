@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::node::MeshNode;
 use crate::pipeline::initiator::PipelineInitiator;
@@ -24,6 +24,10 @@ pub struct MeshBackend {
     node: Arc<MeshNode>,
     scheduler: Arc<dyn LayerScheduler>,
     router: Arc<SwarmRouter>,
+    /// Pipelines set up by `load_model`, keyed by the model path the handle
+    /// carries, so `unload` can release them on the peers. Without this,
+    /// every mesh load left a model resident on every peer forever.
+    active: dashmap::DashMap<std::path::PathBuf, Arc<PipelineInitiator>>,
 }
 
 impl MeshBackend {
@@ -32,6 +36,7 @@ impl MeshBackend {
             node,
             scheduler: Arc::new(SwarmAwareScheduler::new()),
             router: Arc::new(SwarmRouter::new()),
+            active: dashmap::DashMap::new(),
         }
     }
 
@@ -40,6 +45,7 @@ impl MeshBackend {
             node,
             scheduler,
             router: Arc::new(SwarmRouter::new()),
+            active: dashmap::DashMap::new(),
         }
     }
 
@@ -124,6 +130,9 @@ impl InferenceBackend for MeshBackend {
             .setup(&path.display().to_string())
             .await
             .map_err(|e| InferenceError::LoadError(format!("Pipeline setup failed: {e}")))?;
+
+        // Remember the pipeline so unload() can release it on the peers.
+        self.active.insert(path.to_path_buf(), Arc::new(initiator));
 
         Ok(ModelHandle::new(path.to_path_buf(), InferenceEngine::Mesh))
     }
@@ -237,10 +246,26 @@ impl InferenceBackend for MeshBackend {
         Box::pin(ReceiverStream::new(rx))
     }
 
-    async fn unload(&self, _handle: &ModelHandle) -> Result<()> {
-        // Notify all peers to release their resources for this session.
-        // In v1, this is a no-op since we track sessions at a higher level.
-        info!("Unloading model from mesh");
+    async fn unload(&self, handle: &ModelHandle) -> Result<()> {
+        // This used to be a no-op with a comment claiming sessions were
+        // tracked "at a higher level". They were not, so every mesh load
+        // leaked a loaded model on every peer for the rest of their uptime.
+        match self.active.remove(&handle.model_path) {
+            Some((path, initiator)) => {
+                info!(
+                    "Releasing mesh session {} for {}",
+                    initiator.session_id(),
+                    path.display()
+                );
+                initiator.teardown().await;
+            }
+            None => {
+                debug!(
+                    "No active mesh pipeline for {}; nothing to release",
+                    handle.model_path.display()
+                );
+            }
+        }
         Ok(())
     }
 }
