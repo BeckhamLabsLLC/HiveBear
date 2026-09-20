@@ -1,0 +1,7 @@
+# Pinned so a new stable release cannot silently break CI with new lints.
+# (clippy::manual_checked_ops, new in 1.97, did exactly that.)
+# To upgrade: bump `channel`, run `cargo clippy --workspace --all-targets -- -D warnings`
+# locally, fix any new lints, and commit together.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

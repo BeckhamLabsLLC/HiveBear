@@ -139,10 +139,9 @@ pub fn plan_contribution(profile: &HardwareProfile) -> ContributionPlan {
     } else {
         model_size
     };
-    let max_layers = if bytes_per_layer > 0 {
-        (total_usable / bytes_per_layer).min(layers as u64) as u32
-    } else {
-        layers
+    let max_layers = match total_usable.checked_div(bytes_per_layer) {
+        Some(n) => n.min(layers as u64) as u32,
+        None => layers,
     };
 
     ContributionPlan {
