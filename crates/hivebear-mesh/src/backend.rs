@@ -96,13 +96,26 @@ impl InferenceBackend for MeshBackend {
             return Err(InferenceError::LoadError("No mesh peers available".into()));
         }
 
-        // Estimate model properties (in a full implementation, read from GGUF metadata)
-        let total_layers = 32; // Default; would read from model file
+        // Plan for replication: one peer serves the whole model.
+        //
+        // This used to fabricate a 32-layer split (`total_layers = 32 //
+        // Default; would read from model file`) and call `initiator.setup()`,
+        // which sends AssignLayers to every peer and makes them load those
+        // layer ranges. Generation then issued a full-model InferenceRequest
+        // instead, so none of those partial loads was ever used — peers were
+        // holding layer ranges for nothing, and `unload` did not release them.
+        //
+        // Real layer splitting needs two things this backend does not have
+        // yet: an actual layer count from the model's metadata, and the
+        // auto-regressive pipeline token loop (PipelineInitiator::stream_tokens,
+        // whose dtype contract is still broken and which has no callers).
+        // Until both land, planning for one stage is the honest description
+        // of what happens.
+        let total_layers = 1;
         let model_size = std::fs::metadata(path)
             .map(|m| m.len())
-            .unwrap_or(4 * 1024 * 1024 * 1024); // Default 4GB
+            .unwrap_or(4 * 1024 * 1024 * 1024);
 
-        // Create inference plan
         let plan = self
             .scheduler
             .plan(
@@ -115,23 +128,19 @@ impl InferenceBackend for MeshBackend {
             .map_err(|e| InferenceError::LoadError(format!("Scheduling failed: {e}")))?;
 
         info!(
-            "Inference plan: {} peers, est. {:.1} tok/s",
+            "Mesh plan: {} peer(s), est. {:.1} tok/s",
             plan.peer_count(),
             plan.estimated_throughput_tok_s
         );
 
-        // Set up the pipeline
+        // Deliberately no setup() call: replication needs no layer
+        // assignment, and issuing one only pins resources on peers that the
+        // inference path will not touch.
         let initiator = PipelineInitiator::new(
             self.node.transport.clone(),
             plan,
             self.node.local_id.clone(),
         );
-        initiator
-            .setup(&path.display().to_string())
-            .await
-            .map_err(|e| InferenceError::LoadError(format!("Pipeline setup failed: {e}")))?;
-
-        // Remember the pipeline so unload() can release it on the peers.
         self.active.insert(path.to_path_buf(), Arc::new(initiator));
 
         Ok(ModelHandle::new(path.to_path_buf(), InferenceEngine::Mesh))
@@ -169,6 +178,44 @@ impl InferenceBackend for MeshBackend {
 
         let (tx, rx) = tokio::sync::mpsc::channel(32);
 
+        // Reuse the pipeline load_model already negotiated, if there is one.
+        // stream() used to throw it away and re-plan from scratch with
+        // total_layers = 1 and a hardcoded 4 GB model size — so the peers
+        // load_model had assigned layers to were left holding a model nobody
+        // subsequently used, and the scheduler's ranking was recomputed
+        // against invented numbers.
+        let existing = self
+            .active
+            .get(&handle.model_path)
+            .map(|e| Arc::clone(e.value()));
+
+        if let Some(initiator) = existing {
+            info!(
+                "Reusing mesh session {} for {}",
+                initiator.session_id(),
+                handle.model_path.display()
+            );
+            let model_id = model_id.clone();
+            let messages_json = messages_json.clone();
+            tokio::spawn(async move {
+                let mut token_rx = initiator.stream_tokens_replicated(
+                    model_id,
+                    messages_json,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                );
+                while let Some(result) = token_rx.recv().await {
+                    let mapped = result
+                        .map_err(|e| InferenceError::GenerationError(format!("Mesh error: {e}")));
+                    if tx.send(mapped).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            return Box::pin(ReceiverStream::new(rx));
+        }
+
         tokio::spawn(async move {
             // Discover peers for this inference
             let peers = match node.discovery.find_peers("", 0).await {
@@ -191,9 +238,14 @@ impl InferenceBackend for MeshBackend {
                 }
             };
 
-            // Create inference plan (scheduler ranks peers by capability)
-            let total_layers = 1; // Replication: single peer gets the full model
-            let model_size = 4 * 1024 * 1024 * 1024u64;
+            // No pre-negotiated pipeline: fall back to replication, where a
+            // single peer serves the whole model. total_layers = 1 is correct
+            // for that (the "pipeline" is one stage); the size is a scheduling
+            // hint only, and is read from disk when the path is local.
+            let total_layers = 1;
+            let model_size = std::fs::metadata(&model_id)
+                .map(|m| m.len())
+                .unwrap_or(4 * 1024 * 1024 * 1024);
             let plan = match scheduler
                 .plan(&model_id, total_layers, model_size, &peers)
                 .await

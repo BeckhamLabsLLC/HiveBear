@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::peer::NodeId;
@@ -119,10 +119,19 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                     drop(entry);
 
                     if !owned_by_sender {
-                        warn!(
-                            "MeshWorkerDaemon: ignoring ReleaseSession for {session_id} from \
-                             {peer_id}, which does not own it"
-                        );
+                        if self.active_pipeline_session.contains_key(&session_id) {
+                            warn!(
+                                "MeshWorkerDaemon: ignoring ReleaseSession for {session_id} \
+                                 from {peer_id}, which does not own it"
+                            );
+                        } else {
+                            // Nothing was assigned under this id — a
+                            // replication teardown, not an attack.
+                            debug!(
+                                "MeshWorkerDaemon: ReleaseSession for unknown session \
+                                 {session_id} from {peer_id}; nothing to do"
+                            );
+                        }
                         continue;
                     }
 
