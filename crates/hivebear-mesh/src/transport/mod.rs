@@ -52,4 +52,10 @@ pub trait MeshTransport: Send + Sync {
 
     /// Release a session claimed with [`Self::subscribe_session`].
     fn unsubscribe_session(&self, session_id: &Uuid);
+
+    /// The NAT mapping discovered for the listening socket, if the transport
+    /// probed for one. Only meaningful after `listen`.
+    async fn discovered_external_addr(&self) -> Option<SocketAddr> {
+        None
+    }
 }

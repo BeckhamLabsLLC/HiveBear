@@ -402,12 +402,17 @@ fn maybe_start_mesh(
         .unwrap_or_else(|_| hivebear_mesh::NodeIdentity::generate());
 
     let security_mode = hivebear_mesh::MeshSecurityMode::default();
-    let transport: Arc<dyn hivebear_mesh::MeshTransport> =
-        Arc::new(hivebear_mesh::transport::quic::QuicTransport::new(
+    let transport: Arc<dyn hivebear_mesh::MeshTransport> = Arc::new(
+        hivebear_mesh::transport::quic::QuicTransport::new(
             identity.node_id.clone(),
             security_mode,
-            None,
-        ));
+            Some(paths.data_dir.join("tofu_pins.json")),
+        )
+        // STUN must run on the socket we will listen on, so the transport
+        // does it during listen() rather than the node doing it beforehand
+        // on a throwaway socket.
+        .with_stun_servers(config.mesh.stun_servers.clone()),
+    );
     let discovery: Arc<dyn hivebear_mesh::discovery::PeerDiscovery> = Arc::new(
         hivebear_mesh::discovery::server::CoordinationServerClient::new(
             config.mesh.coordination_server.clone(),
@@ -415,13 +420,21 @@ fn maybe_start_mesh(
     );
 
     let reputation_path = Some(paths.data_dir.join("reputation.json"));
-    let node = Arc::new(hivebear_mesh::MeshNode::with_identity(
-        identity,
-        transport,
-        discovery,
-        tier,
-        reputation_path,
-    ));
+    let node = Arc::new(
+        hivebear_mesh::MeshNode::with_identity(
+            identity,
+            transport,
+            discovery,
+            tier,
+            reputation_path,
+        )
+        // These were hardcoded inside MeshNode, so the configured values
+        // were parsed, shown in Settings, and ignored.
+        .with_nat_servers(
+            config.mesh.stun_servers.clone(),
+            config.mesh.relay_servers.clone(),
+        ),
+    );
 
     let listen_addr: std::net::SocketAddr =
         format!("0.0.0.0:{}", config.mesh.port).parse().unwrap();

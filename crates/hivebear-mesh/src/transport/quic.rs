@@ -29,6 +29,10 @@ pub struct QuicTransport {
     security_mode: MeshSecurityMode,
     /// Optional path to persist TOFU certificate pins across restarts.
     tofu_pins_path: Option<PathBuf>,
+    /// STUN servers to probe with, on the listening socket itself.
+    stun_servers: Vec<String>,
+    /// Mapping STUN reported for the listening socket, once known.
+    external_addr: Mutex<Option<SocketAddr>>,
 }
 
 impl QuicTransport {
@@ -48,7 +52,23 @@ impl QuicTransport {
             inbox: Arc::new(Inbox::new()),
             security_mode,
             tofu_pins_path,
+            stun_servers: Vec::new(),
+            external_addr: Mutex::new(None),
         }
+    }
+
+    /// Probe these STUN servers when listening, using the listening socket.
+    ///
+    /// NAT mappings are per source port, so discovering an external address
+    /// on any other socket produces a port nothing is listening on.
+    pub fn with_stun_servers(mut self, servers: Vec<String>) -> Self {
+        self.stun_servers = servers;
+        self
+    }
+
+    /// Mapping STUN found for the listening socket, if it was probed.
+    pub async fn external_addr(&self) -> Option<SocketAddr> {
+        *self.external_addr.lock().await
     }
 
     fn node_key(id: &NodeId) -> Vec<u8> {
@@ -271,8 +291,48 @@ impl MeshTransport for QuicTransport {
         let (server_config, client_config) =
             Self::generate_self_signed_config(self.security_mode, self.tofu_pins_path.clone())?;
 
-        let mut endpoint = Endpoint::server(server_config, addr)
+        // Bind the socket ourselves so STUN can run on it before quinn takes
+        // ownership. Discovering the mapping on a throwaway socket, as this
+        // used to, yields a port no peer can reach.
+        let std_socket = std::net::UdpSocket::bind(addr)
             .map_err(|e| MeshError::Transport(format!("bind: {e}")))?;
+        std_socket
+            .set_nonblocking(true)
+            .map_err(|e| MeshError::Transport(format!("set_nonblocking: {e}")))?;
+
+        let std_socket = if self.stun_servers.is_empty() {
+            std_socket
+        } else {
+            let probe = tokio::net::UdpSocket::from_std(std_socket)
+                .map_err(|e| MeshError::Transport(format!("adopt socket: {e}")))?;
+
+            let mut discovered = None;
+            for server in &self.stun_servers {
+                match crate::nat::stun::discover_external_addr_for(&probe, server).await {
+                    Ok(a) => {
+                        info!("STUN: {addr} is seen externally as {a}");
+                        discovered = Some(a);
+                        break;
+                    }
+                    Err(e) => debug!("STUN via {server} failed (non-fatal): {e}"),
+                }
+            }
+            *self.external_addr.lock().await = discovered;
+
+            probe
+                .into_std()
+                .map_err(|e| MeshError::Transport(format!("release socket: {e}")))?
+        };
+
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| MeshError::Transport("no async runtime for QUIC".into()))?;
+        let mut endpoint = Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            std_socket,
+            runtime,
+        )
+        .map_err(|e| MeshError::Transport(format!("endpoint: {e}")))?;
         endpoint.set_default_client_config(client_config);
 
         info!("Listening on {addr}");
@@ -399,6 +459,10 @@ impl MeshTransport for QuicTransport {
 
     fn unsubscribe_session(&self, session_id: &uuid::Uuid) {
         self.inbox.unsubscribe(session_id);
+    }
+
+    async fn discovered_external_addr(&self) -> Option<SocketAddr> {
+        self.external_addr().await
     }
 }
 

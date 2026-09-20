@@ -95,24 +95,42 @@ impl MeshNode {
     ///
     /// Automatically discovers external address via STUN before registering,
     /// so the coordinator knows how other peers can reach us.
+    /// Override the NAT helper servers.
+    ///
+    /// `MeshConfig::stun_servers` and `relay_servers` are parsed, persisted
+    /// and shown in Settings, but both constructors hardcoded their own
+    /// values and never consulted the config — so changing either setting did
+    /// nothing. Callers should pass the configured lists through here.
+    pub fn with_nat_servers(
+        mut self,
+        stun_servers: Vec<String>,
+        relay_servers: Vec<String>,
+    ) -> Self {
+        if !stun_servers.is_empty() {
+            self.stun_servers = stun_servers;
+        }
+        if !relay_servers.is_empty() {
+            self.relay_servers = relay_servers;
+        }
+        self
+    }
+
     pub async fn start(&self, listen_addr: SocketAddr, mut local_info: PeerInfo) -> Result<()> {
         info!("Starting mesh node {} on {}", self.local_id, listen_addr);
 
-        // Discover external address via STUN (non-blocking, best-effort)
-        if let Some(stun_server) = self.stun_servers.first() {
-            match nat::stun::discover_external_addr(stun_server).await {
-                Ok(ext_addr) => {
-                    info!("STUN discovered external address: {ext_addr}");
-                    *self.external_addr.write().await = Some(ext_addr);
-                    local_info.external_addr = Some(ext_addr);
-                }
-                Err(e) => {
-                    debug!("STUN discovery failed (non-fatal): {e}");
-                }
-            }
-        }
-
+        // Listen first: the transport probes STUN on the socket it is about
+        // to serve on. Doing it here, on a throwaway socket, reported a NAT
+        // mapping for a port nothing was listening on — useless for hole
+        // punching on anything stricter than a full-cone NAT.
         self.transport.listen(listen_addr).await?;
+
+        if let Some(ext_addr) = self.transport.discovered_external_addr().await {
+            info!("External address for {listen_addr}: {ext_addr}");
+            *self.external_addr.write().await = Some(ext_addr);
+            local_info.external_addr = Some(ext_addr);
+        } else {
+            debug!("No external address discovered; advertising {listen_addr} only");
+        }
 
         // Listening is what makes us runnable; registration is what makes us
         // reachable by strangers. Treat them separately so a coordinator
