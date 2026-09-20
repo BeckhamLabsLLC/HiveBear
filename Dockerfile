@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     cmake \
     g++ \
+    clang \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
