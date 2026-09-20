@@ -433,7 +433,8 @@ fn maybe_start_mesh(
         .with_nat_servers(
             config.mesh.stun_servers.clone(),
             config.mesh.relay_servers.clone(),
-        ),
+        )
+        .with_min_reputation(config.mesh.min_reputation),
     );
 
     let listen_addr: std::net::SocketAddr =

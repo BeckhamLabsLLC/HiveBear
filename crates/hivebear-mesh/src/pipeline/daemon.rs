@@ -290,6 +290,33 @@ impl<H: MeshInferenceHandler + 'static> MeshWorkerDaemon<H> {
                         });
                     }
                 }
+                MeshMessage::VerifyChallenge {
+                    session_id,
+                    layer_range: _,
+                    token_position,
+                    data,
+                    shape,
+                    dtype,
+                } => {
+                    // The daemon did not handle this at all, so a challenge
+                    // to a real contributor was silently dropped and the
+                    // verifier waited for a reply that never came. Every
+                    // responder now answers by actually running the layers.
+                    let handler = self.pipeline_handler.clone();
+                    let transport = self.transport.clone();
+                    tokio::spawn(async move {
+                        let response = crate::trust::verification::answer_challenge(
+                            handler.as_deref(),
+                            session_id,
+                            token_position,
+                            data.to_vec(),
+                            shape,
+                            dtype,
+                        )
+                        .await;
+                        let _ = transport.send(&peer_id, response).await;
+                    });
+                }
                 _ => {
                     // Ignore messages we don't handle (Hello, etc.)
                 }
@@ -578,6 +605,67 @@ mod tests {
             }
             other => panic!("expected Logits from the final stage, got {other:?}"),
         }
+    }
+
+    /// End to end over the wire: a verifier challenges a running worker and
+    /// judges the answer itself.
+    ///
+    /// Before this, the daemon did not handle VerifyChallenge at all, so the
+    /// verifier waited forever; and where a responder did exist it hashed
+    /// session metadata and asserted `passed: true` about itself.
+    #[tokio::test]
+    async fn a_verifier_catches_a_wrong_answer() {
+        use crate::transport::protocol::TensorDtype;
+        use crate::trust::verification::{ActivationBytes, TrustVerifier};
+
+        let registry = MockRegistry::new();
+        let challenger = Arc::new(MockTransport::new(NodeId::generate().0, registry.clone()));
+        let worker = Arc::new(MockTransport::new(NodeId::generate().0, registry.clone()));
+        challenger.connect_for_test(&worker);
+        worker.connect_for_test(&challenger);
+
+        let daemon = Arc::new(MeshWorkerDaemon::with_pipeline(
+            Arc::new(NoInference),
+            worker.clone(),
+            Arc::new(EchoPipeline),
+        ));
+        let d = daemon.clone();
+        tokio::spawn(async move { d.run().await });
+
+        let verifier = TrustVerifier::new(challenger.clone(), 1.0);
+        let session_id = Uuid::new_v4();
+        let input = ActivationBytes {
+            data: vec![7, 7, 7, 7],
+            shape: vec![1, 4],
+            dtype: TensorDtype::F32,
+        };
+
+        // EchoPipeline returns the input unchanged, so the honest hash is
+        // the hash of the input bytes.
+        let honest = crate::trust::verification::hash_bytes(&input.data);
+
+        let reported = verifier
+            .challenge(worker.local_id(), session_id, 0..4, 0, &input)
+            .await
+            .expect("worker should answer");
+        assert_eq!(
+            reported, honest,
+            "the worker must report the hash of what it actually computed"
+        );
+
+        assert!(verifier
+            .verify_consistent_with(worker.local_id(), session_id, 0..4, 0, &input, honest)
+            .await
+            .unwrap());
+
+        // A reference that disagrees must fail, no matter what the peer says.
+        assert!(
+            !verifier
+                .verify_consistent_with(worker.local_id(), session_id, 0..4, 0, &input, [0xAB; 32],)
+                .await
+                .unwrap(),
+            "the peer does not get a vote on whether it passed"
+        );
     }
 
     #[tokio::test]

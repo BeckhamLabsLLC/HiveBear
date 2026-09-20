@@ -317,40 +317,30 @@ impl PipelineWorker {
                             }
                             MeshMessage::VerifyChallenge {
                                 session_id,
-                                layer_index,
-                                input_hash,
+                                layer_range: _,
+                                token_position,
+                                data,
+                                shape,
+                                dtype,
                             } => {
-                                // Compute a verification hash based on session state
-                                use sha2::{Digest, Sha256};
-                                let output_hash =
-                                    if let Some(session) = self.sessions.get(&session_id) {
-                                        // Hash the combination of input_hash + layer assignment
-                                        // to produce a deterministic but session-specific response
-                                        let mut hasher = Sha256::new();
-                                        hasher.update(input_hash);
-                                        hasher.update(session.layer_range.start.to_le_bytes());
-                                        hasher.update(session.layer_range.end.to_le_bytes());
-                                        hasher.update(layer_index.to_le_bytes());
-                                        hasher.update(session.model_id.as_bytes());
-                                        let result = hasher.finalize();
-                                        let mut hash = [0u8; 32];
-                                        hash.copy_from_slice(&result);
-                                        hash
-                                    } else {
-                                        [0u8; 32]
-                                    };
-
-                                let _ = self
-                                    .transport
-                                    .send(
-                                        &peer_id,
-                                        MeshMessage::VerifyResponse {
-                                            session_id,
-                                            output_hash,
-                                            passed: true,
-                                        },
-                                    )
-                                    .await;
+                                // Actually run the layers over the supplied
+                                // input and hash what comes out.
+                                //
+                                // This used to hash the *session metadata* —
+                                // layer range plus model id — and answer
+                                // `passed: true` unconditionally, so it
+                                // proved nothing except that the session
+                                // existed, and graded its own homework.
+                                let response = crate::trust::verification::answer_challenge(
+                                    self.pipeline_handler.as_deref(),
+                                    session_id,
+                                    token_position,
+                                    data.to_vec(),
+                                    shape,
+                                    dtype,
+                                )
+                                .await;
+                                let _ = self.transport.send(&peer_id, response).await;
                             }
                             _ => {
                                 debug!("Worker ignoring message from {peer_id}");

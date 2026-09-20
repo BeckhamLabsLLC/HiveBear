@@ -116,18 +116,33 @@ pub enum MeshMessage {
         vocab_size: u32,
     },
 
-    /// Request to verify a specific layer's computation.
+    /// Ask a worker to re-run its assigned layers over a specific input so
+    /// the result can be checked.
+    ///
+    /// This used to carry only `input_hash`. A worker cannot compute anything
+    /// from a hash, so the challenge was unanswerable by construction and the
+    /// only thing a responder could do was assert its own innocence — which
+    /// is exactly what the implementation did. The input travels in full.
     VerifyChallenge {
         session_id: Uuid,
-        layer_index: u32,
-        input_hash: [u8; 32],
+        /// Which layers to run. Lets the challenger target one stage.
+        layer_range: Range<u32>,
+        token_position: u32,
+        data: Bytes,
+        shape: Vec<usize>,
+        dtype: TensorDtype,
     },
 
-    /// Response to a verification challenge.
+    /// A worker's answer to [`MeshMessage::VerifyChallenge`].
+    ///
+    /// Deliberately carries no `passed` flag: whether a result is acceptable
+    /// is the challenger's judgement, and asking the subject of an audit to
+    /// grade itself is not verification. It reports the SHA-256 of the bytes
+    /// it actually produced, or why it could not produce them.
     VerifyResponse {
         session_id: Uuid,
         output_hash: [u8; 32],
-        passed: bool,
+        error: Option<String>,
     },
 
     /// Session teardown: release model and resources.

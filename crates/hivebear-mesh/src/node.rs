@@ -31,6 +31,12 @@ pub struct MeshNode {
     pub external_addr: tokio::sync::RwLock<Option<SocketAddr>>,
     /// Address we are listening on, once started.
     listen_addr: tokio::sync::RwLock<Option<SocketAddr>>,
+    /// Reputation below which a peer is not worth connecting to.
+    ///
+    /// `MeshConfig::min_reputation` is validated on save and displayed in
+    /// Settings, but nothing read it — only the hard ban threshold applied,
+    /// so the setting did nothing at any value.
+    min_reputation: f64,
     /// STUN servers for NAT detection.
     pub stun_servers: Vec<String>,
     /// Relay servers for symmetric NAT fallback.
@@ -68,6 +74,7 @@ impl MeshNode {
             tier,
             external_addr: tokio::sync::RwLock::new(None),
             listen_addr: tokio::sync::RwLock::new(None),
+            min_reputation: 0.0,
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
@@ -94,6 +101,7 @@ impl MeshNode {
             tier,
             external_addr: tokio::sync::RwLock::new(None),
             listen_addr: tokio::sync::RwLock::new(None),
+            min_reputation: 0.0,
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
@@ -112,6 +120,31 @@ impl MeshNode {
     /// and shown in Settings, but both constructors hardcoded their own
     /// values and never consulted the config — so changing either setting did
     /// nothing. Callers should pass the configured lists through here.
+    /// Refuse peers whose reputation is below `min_reputation`.
+    pub fn with_min_reputation(mut self, min_reputation: f64) -> Self {
+        self.min_reputation = min_reputation.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Record the outcome of a verification challenge against a peer.
+    ///
+    /// Nothing called into ReputationManager before this, so scores never
+    /// moved off the neutral 0.5 and `is_banned` could never become true no
+    /// matter how a peer behaved.
+    pub async fn record_verification(&self, peer: &NodeId, passed: bool) {
+        let mut rep = self.reputation.lock().await;
+        rep.record_verification(peer, passed);
+        let score = rep.score(peer);
+        if passed {
+            debug!("Verification passed for {peer}; score now {score:.2}");
+        } else {
+            warn!("Verification FAILED for {peer}; score now {score:.2}");
+        }
+        if rep.is_banned(peer) {
+            warn!("Peer {peer} is now below the ban threshold and will be skipped");
+        }
+    }
+
     pub fn with_nat_servers(
         mut self,
         stun_servers: Vec<String>,
@@ -300,6 +333,14 @@ impl MeshNode {
                 let rep = self.reputation.lock().await;
                 if rep.is_banned(&peer_info.node_id) {
                     debug!("Skipping banned peer {}", peer_info.node_id);
+                    continue;
+                }
+                let score = rep.score(&peer_info.node_id);
+                if score < self.min_reputation {
+                    debug!(
+                        "Skipping {}: reputation {score:.2} is below the configured minimum {:.2}",
+                        peer_info.node_id, self.min_reputation
+                    );
                     continue;
                 }
             }

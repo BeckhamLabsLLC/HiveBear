@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::error::{MeshError, Result};
@@ -291,6 +291,17 @@ impl PipelineInitiator {
                 }
             };
 
+            // Keep the first activation: for a single-stage pipeline the
+            // initiator observes both this input and the logits that come
+            // back, which is the one place it holds a trustworthy reference
+            // to re-challenge the worker against.
+            let spot_check_input = crate::trust::verification::ActivationBytes {
+                data: activation.0.clone(),
+                shape: activation.1.clone(),
+                dtype: crate::transport::protocol::TensorDtype::from_u8(activation.2)
+                    .unwrap_or(crate::transport::protocol::TensorDtype::F32),
+            };
+
             // Send the initial activation through the pipeline.
             // The dtype MUST come from what the engine actually produced
             // (`activation.2`); hardcoding it mislabels the tensor and the receiving
@@ -358,6 +369,54 @@ impl PipelineInitiator {
                         }
                     }
                 };
+
+                // Spot-check the worker, once, on the first token.
+                //
+                // Only sound with a single stage: then this input and these
+                // logits are the same peer's input and output, so re-running
+                // the input must reproduce the same hash. With several stages
+                // the initiator never sees any individual stage's output and
+                // has no reference to compare against, so it does not guess.
+                if position == 0 && self.plan.assignments.len() == 1 {
+                    if let Some(verifier) = self.verifier.clone() {
+                        if verifier.should_verify() {
+                            let expected = crate::trust::verification::hash_bytes(&logits_data);
+                            let peer = first_worker.clone();
+                            let input = spot_check_input.clone();
+                            let reputation = self.reputation.clone();
+                            // A fresh session id: the generation loop owns
+                            // `session_id`'s queue, and re-subscribing would
+                            // steal its messages.
+                            let check_session = Uuid::new_v4();
+                            tokio::spawn(async move {
+                                match verifier
+                                    .verify_consistent_with(
+                                        &peer,
+                                        check_session,
+                                        0..u32::MAX,
+                                        0,
+                                        &input,
+                                        expected,
+                                    )
+                                    .await
+                                {
+                                    Ok(passed) => {
+                                        if let Some(rep) = reputation {
+                                            rep.lock().await.record_verification(&peer, passed);
+                                        }
+                                        if !passed {
+                                            warn!(
+                                                "Spot check failed for {peer}: it did not \
+                                                 reproduce its own output"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => debug!("Spot check against {peer} failed: {e}"),
+                                }
+                            });
+                        }
+                    }
+                }
 
                 // Sample the next token from the received logits.
                 let sample_result = pipeline_handler
