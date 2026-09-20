@@ -81,48 +81,54 @@ pub fn plan_contribution(profile: &HardwareProfile) -> ContributionPlan {
     let total_usable = total_vram + available_ram;
     let gb = 1024u64 * 1024 * 1024;
 
-    // Model selection based on capacity
-    let (model_id, model_name, model_size, layers) = match tier {
+    // Model selection based on capacity.
+    //
+    // These ids MUST exist in `recommender::model_db::builtin_models()`.
+    // They previously carried a quantisation suffix ("phi-3-mini-3.8b-q4_k_m")
+    // and in three cases named models that are not in the catalogue at all
+    // (tinyllama-1.1b, codellama-13b, yi-34b). `Registry::resolve` is an exact
+    // lookup, so *every* tier failed with "Model not found", and the install
+    // command it suggested failed the same way — `hivebear contribute` could
+    // not work on any machine, which is why the coordinator reports no peers.
+    // `contribution_models_exist_in_catalogue` below now guards this.
+    let (model_id, model_size, layers) = match tier {
         ContributionTier::CpuWorker => {
             if available_ram >= 2 * gb {
-                (
-                    "phi-3-mini-3.8b-q4_k_m",
-                    "Phi-3 Mini 3.8B",
-                    (2.3 * gb as f64) as u64,
-                    32,
-                )
+                ("phi-3-mini-3.8b", (2.3 * gb as f64) as u64, 32)
             } else {
-                (
-                    "tinyllama-1.1b-q4_k_m",
-                    "TinyLlama 1.1B",
-                    (0.7 * gb as f64) as u64,
-                    22,
-                )
+                ("llama-3.2-1b", (0.9 * gb as f64) as u64, 16)
             }
         }
-        ContributionTier::LightGpu => ("llama-3.2-3b-q4_k_m", "Llama 3.2 3B", 2 * gb, 28),
+        ContributionTier::LightGpu => ("llama-3.2-3b", 2 * gb, 28),
         ContributionTier::MidGpu => {
             if total_usable >= 7 * gb {
-                ("llama-3.1-8b-q4_k_m", "Llama 3.1 8B", 5 * gb, 32)
+                ("llama-3.1-8b", 5 * gb, 32)
             } else {
-                ("mistral-7b-q4_k_m", "Mistral 7B", 4 * gb, 32)
+                ("mistral-7b-v0.3", 4 * gb, 32)
             }
         }
         ContributionTier::StrongGpu => {
             if total_usable >= 10 * gb {
-                ("codellama-13b-q4_k_m", "CodeLlama 13B", 8 * gb, 40)
+                ("phi-3-medium-14b", 8 * gb, 40)
             } else {
-                ("llama-3.1-8b-q6_k", "Llama 3.1 8B (Q6)", 7 * gb, 32)
+                ("llama-3.1-8b", 7 * gb, 32)
             }
         }
         ContributionTier::HeavyGpu => {
             if total_usable >= 42 * gb {
-                ("llama-3.1-70b-q4_k_m", "Llama 3.1 70B", 40 * gb, 80)
+                ("llama-3.1-70b", 40 * gb, 80)
             } else {
-                ("yi-34b-q4_k_m", "Yi 34B", 20 * gb, 60)
+                ("qwen-2.5-32b", 20 * gb, 64)
             }
         }
     };
+
+    // Display name comes from the catalogue so the two cannot drift.
+    let model_name = crate::recommender::model_db::builtin_models()
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.name)
+        .unwrap_or_else(|| model_id.to_string());
 
     // Rough TFLOPS estimate from memory bandwidth
     let estimated_tflops = if total_vram > 0 {
@@ -228,8 +234,50 @@ mod tests {
         assert_eq!(plan.tier, ContributionTier::CpuWorker);
         assert!(
             plan.recommended_model.contains("phi-3")
-                || plan.recommended_model.contains("tinyllama")
+                || plan.recommended_model.contains("llama-3.2-1b")
         );
+    }
+
+    /// Every model the planner can recommend must exist in the builtin
+    /// catalogue. `Registry::resolve` is an exact-id lookup, so an id that is
+    /// merely plausible fails at runtime with "Model not found" — which is
+    /// exactly how `hivebear contribute` came to be broken on every machine
+    /// and every tier, leaving the mesh with no peers at all.
+    #[test]
+    fn contribution_models_exist_in_catalogue() {
+        let catalogue: Vec<String> = crate::recommender::model_db::builtin_models()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+
+        // Span every tier and both branches within each tier.
+        let profiles = [
+            profile_with_vram(1, 0),    // CpuWorker, low RAM branch
+            profile_with_vram(16, 0),   // CpuWorker, normal RAM branch
+            profile_with_vram(16, 2),   // LightGpu
+            profile_with_vram(8, 6),    // MidGpu, small branch
+            profile_with_vram(32, 6),   // MidGpu, large branch
+            profile_with_vram(16, 10),  // StrongGpu, small branch
+            profile_with_vram(32, 12),  // StrongGpu, large branch
+            profile_with_vram(32, 20),  // HeavyGpu, small branch
+            profile_with_vram(128, 48), // HeavyGpu, large branch
+        ];
+
+        for profile in profiles {
+            let plan = plan_contribution(&profile);
+            assert!(
+                catalogue.contains(&plan.recommended_model),
+                "tier {:?} recommends `{}`, which is not in builtin_models(); \
+                 Registry::resolve would fail with \"Model not found\"",
+                plan.tier,
+                plan.recommended_model,
+            );
+            assert!(
+                !plan.recommended_model_name.is_empty(),
+                "tier {:?} produced an empty model name",
+                plan.tier,
+            );
+        }
     }
 
     #[test]
