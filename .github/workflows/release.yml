@@ -508,10 +508,10 @@ jobs:
                   'url': '${BASE_URL}/${LINUX_FILE}'
               }
           if '$MACOS_SIG' and '$MACOS_FILE':
-              platforms['darwin-x86_64'] = {
-                  'signature': '$MACOS_SIG',
-                  'url': '${BASE_URL}/${MACOS_FILE}'
-              }
+              # Only aarch64. The desktop matrix builds on a single
+              # macos-latest (arm64) runner, so there is no x86_64 bundle to
+              # offer; listing darwin-x86_64 here handed Intel Macs an arm64
+              # update. Re-add it alongside a universal or x86_64 build.
               platforms['darwin-aarch64'] = {
                   'signature': '$MACOS_SIG',
                   'url': '${BASE_URL}/${MACOS_FILE}'
@@ -528,6 +528,14 @@ jobs:
           }
           json.dump(manifest, open('release/latest.json', 'w'), indent=2)
           print(json.dumps(manifest, indent=2))
+          # A manifest with no platforms is worse than useless: the updater
+          # fetches it, finds nothing, and every install stays frozen with no
+          # error anyone sees. v0.1.5 shipped without updater signatures for
+          # months exactly this way. Fail loudly instead.
+          if not platforms:
+              sys.exit('latest.json has no platforms -- no .sig artifacts were '
+                       'produced. Check bundle.createUpdaterArtifacts and the '
+                       'TAURI_SIGNING_PRIVATE_KEY secret.')
           "
 
       - name: Upload desktop assets to release
