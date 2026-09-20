@@ -67,6 +67,16 @@ function describe(
       icon: <Network size={12} aria-hidden />,
     };
   }
+  // Running locally but unregistered is not "connecting" — nothing will
+  // change until the coordination server comes back, and an indefinite
+  // "connecting" spinner is how this looked like a hang.
+  if (!status.registered) {
+    return {
+      label: "Mesh offline",
+      tone: "error" as const,
+      icon: <WifiOff size={12} aria-hidden />,
+    };
+  }
   if (status.peer_count === 0) {
     return {
       label: "Mesh connecting",

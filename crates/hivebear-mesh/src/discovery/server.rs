@@ -62,12 +62,20 @@ impl PeerDiscovery for CoordinationServerClient {
                 )))
             }
             Err(e) if e.is_connect() || e.is_timeout() => {
-                // Server not reachable — degrade gracefully
+                // Unreachable is still a failure to register. This used to
+                // return Ok(()), so MeshNode::start "succeeded", `running`
+                // flipped to true, and the CLI and desktop both told the user
+                // they were "Connected to Hive" while connected to nothing.
+                // Degrading gracefully is the caller's decision to make, and
+                // it cannot make it if we lie here.
                 warn!(
-                    "Coordination server at {} not reachable: {e}. Running in local-only mode.",
+                    "Coordination server at {} not reachable: {e}",
                     self.base_url
                 );
-                Ok(())
+                Err(MeshError::Discovery(format!(
+                    "Coordination server at {} not reachable: {e}",
+                    self.base_url
+                )))
             }
             Err(e) => Err(MeshError::Discovery(format!(
                 "Failed to contact coordination server: {e}"

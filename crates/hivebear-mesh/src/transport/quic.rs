@@ -57,11 +57,52 @@ impl QuicTransport {
         id.0.to_bytes().to_vec()
     }
 
+    /// TLS server name used when dialling `addr`.
+    ///
+    /// Every connection used to be made with the literal name
+    /// "hivebear-mesh", and `TofuVerifier` keys its pin map on the server
+    /// name — so the map only ever held one entry and the *second* distinct
+    /// peer a process dialled was rejected as a fingerprint mismatch
+    /// ("possible MITM"). A mesh where each node can hold one peer is not a
+    /// mesh. Deriving the name from the peer address makes the pinning
+    /// per-peer, which is what TOFU means everywhere else (ssh pins per host).
+    ///
+    /// The address is sanitised into a single DNS-safe label. The custom
+    /// verifier ignores certificate names entirely, so this only has to be
+    /// unique and parseable, not resolvable.
+    fn peer_server_name(addr: SocketAddr) -> String {
+        let label: String = addr
+            .to_string()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        format!("{label}.hivebear-mesh")
+    }
+
+    /// Make sure a rustls `CryptoProvider` is the process default.
+    ///
+    /// `TofuVerifier::verify_tls1{2,3}_signature` calls
+    /// `CryptoProvider::get_default().expect(...)`. Nothing in this workspace
+    /// installed one — it happened to work only because
+    /// `ClientConfig::builder()` installs the crate-feature default as a side
+    /// effect. Doing it explicitly means that `expect` cannot abort a peer
+    /// connection if that side effect ever goes away.
+    fn ensure_crypto_provider() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+            }
+        });
+    }
+
     /// Generate self-signed TLS certificate with the configured security mode.
     fn generate_self_signed_config(
         security_mode: MeshSecurityMode,
         tofu_pins_path: Option<PathBuf>,
     ) -> Result<(ServerConfig, ClientConfig)> {
+        Self::ensure_crypto_provider();
+
         let cert = rcgen::generate_simple_self_signed(vec!["hivebear-mesh".into()])
             .map_err(|e| MeshError::Transport(format!("cert generation: {e}")))?;
 
@@ -172,8 +213,9 @@ impl MeshTransport for QuicTransport {
             .ok_or_else(|| MeshError::Transport("Not listening".into()))?;
 
         info!("Connecting to peer at {addr}");
+        let server_name = Self::peer_server_name(addr);
         let conn = endpoint
-            .connect(addr, "hivebear-mesh")
+            .connect(addr, &server_name)
             .map_err(|e| MeshError::Transport(format!("connect: {e}")))?
             .await
             .map_err(|e| MeshError::Transport(format!("handshake: {e}")))?;
@@ -377,7 +419,8 @@ impl MeshTransport for QuicTransport {
 /// connection is rejected (possible MITM attack).
 #[derive(Debug)]
 struct TofuVerifier {
-    /// server_name -> SHA-256 fingerprint of the pinned DER certificate.
+    /// per-peer server name -> SHA-256 fingerprint of the pinned DER cert.
+    /// See `QuicTransport::peer_server_name` for why this is per-peer.
     pinned: DashMap<String, Vec<u8>>,
     /// Optional path for persisting pins to disk across restarts.
     storage_path: Option<PathBuf>,
@@ -611,5 +654,83 @@ impl rustls::client::danger::ServerCertVerifier for InsecureVerification {
             rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
             rustls::SignatureScheme::ED25519,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::NodeIdentity;
+
+    /// Grab a port the OS just told us is free. Racy in principle, fine here.
+    fn free_addr() -> SocketAddr {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe socket");
+        let addr = sock.local_addr().expect("probe local_addr");
+        drop(sock);
+        addr
+    }
+
+    fn transport() -> QuicTransport {
+        QuicTransport::new(
+            NodeIdentity::generate().node_id,
+            MeshSecurityMode::default(),
+            None,
+        )
+    }
+
+    #[test]
+    fn peer_server_name_is_unique_and_dns_safe() {
+        let a = QuicTransport::peer_server_name("127.0.0.1:7878".parse().unwrap());
+        let b = QuicTransport::peer_server_name("127.0.0.1:7879".parse().unwrap());
+        let c = QuicTransport::peer_server_name("10.0.0.5:7878".parse().unwrap());
+
+        assert_ne!(a, b, "different ports must pin separately");
+        assert_ne!(a, c, "different hosts must pin separately");
+        assert!(a.ends_with(".hivebear-mesh"));
+        assert!(
+            a.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.'),
+            "server name must stay DNS-safe, got {a}"
+        );
+    }
+
+    /// The regression this guards: every connection used to be dialled with
+    /// the fixed name "hivebear-mesh", and TOFU pins are keyed on that name.
+    /// The first peer's self-signed certificate got pinned under it, so the
+    /// second peer — presenting its own, different certificate — was rejected
+    /// as "possible MITM". One peer per process is not a mesh.
+    #[tokio::test]
+    async fn connects_to_two_distinct_peers() {
+        let addr_a = free_addr();
+        let addr_b = free_addr();
+
+        let server_a = transport();
+        let server_b = transport();
+        server_a.listen(addr_a).await.expect("server A listen");
+        server_b.listen(addr_b).await.expect("server B listen");
+
+        // The client must listen too: `connect` requires an endpoint.
+        let client = transport();
+        client.listen(free_addr()).await.expect("client listen");
+
+        let peer_a = client
+            .connect(addr_a)
+            .await
+            .expect("first peer should connect");
+        let peer_b = client
+            .connect(addr_b)
+            .await
+            .expect("second peer should connect — this is the TOFU regression");
+
+        assert_ne!(
+            peer_a.0.to_bytes(),
+            peer_b.0.to_bytes(),
+            "the two servers should report distinct node ids"
+        );
+        assert_eq!(
+            client.peer_count(),
+            2,
+            "client should hold both connections"
+        );
     }
 }

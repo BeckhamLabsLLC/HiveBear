@@ -160,6 +160,8 @@ export function saveMeshConfig(meshConfig: MeshConfig): Promise<void> {
 
 export interface MeshConnectionStatus {
   running: boolean;
+  /** Coordination server has acknowledged this node. Distinct from `running`. */
+  registered: boolean;
   peer_count: number;
   node_id: string | null;
 }

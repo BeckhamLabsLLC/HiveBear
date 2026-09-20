@@ -34,6 +34,10 @@ pub struct MeshNode {
     /// Relay servers for symmetric NAT fallback.
     pub relay_servers: Vec<String>,
     running: std::sync::atomic::AtomicBool,
+    /// Whether the coordination server has acknowledged us. Distinct from
+    /// `running`: the local node can be listening happily while the
+    /// coordinator is unreachable, and the UI must not conflate the two.
+    registered: std::sync::atomic::AtomicBool,
     shutdown: Arc<Notify>,
 }
 
@@ -57,6 +61,7 @@ impl MeshNode {
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
+            registered: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
     }
@@ -81,6 +86,7 @@ impl MeshNode {
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
+            registered: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
     }
@@ -107,11 +113,27 @@ impl MeshNode {
         }
 
         self.transport.listen(listen_addr).await?;
-        self.discovery.register(&local_info).await?;
+
+        // Listening is what makes us runnable; registration is what makes us
+        // reachable by strangers. Treat them separately so a coordinator
+        // outage degrades to local-only instead of failing startup — and so
+        // nothing can claim we are on the hive when we are not.
+        let registration = self.discovery.register(&local_info).await;
+        let registered = registration.is_ok();
+        self.registered
+            .store(registered, std::sync::atomic::Ordering::Relaxed);
         self.running
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        info!("Mesh node {} is running", self.local_id);
+        match registration {
+            Ok(()) => info!("Mesh node {} is running and registered", self.local_id),
+            Err(e) => warn!(
+                "Mesh node {} is running but NOT registered with the coordination \
+                 server ({e}); it will retry on the next heartbeat. Peers cannot \
+                 discover this node until then.",
+                self.local_id
+            ),
+        }
         Ok(())
     }
 
@@ -142,8 +164,19 @@ impl MeshNode {
                     }
                     _ = heartbeat_interval.tick() => {
                         if !node.is_running() { break; }
-                        if let Err(e) = node.discovery.heartbeat().await {
-                            debug!("Heartbeat failed (non-fatal): {e}");
+                        match node.discovery.heartbeat().await {
+                            Ok(()) => {
+                                if !node.is_registered() {
+                                    info!("Re-established contact with the coordination server");
+                                }
+                                node.registered.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                if node.is_registered() {
+                                    warn!("Lost contact with the coordination server: {e}");
+                                }
+                                node.registered.store(false, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                     }
                     _ = health_interval.tick() => {
@@ -381,9 +414,20 @@ impl MeshNode {
         Ok(())
     }
 
-    /// Check if the node is running.
+    /// Check if the node is running (listening locally).
+    ///
+    /// This does NOT mean the coordination server knows about us — use
+    /// [`Self::is_registered`] for that.
     pub fn is_running(&self) -> bool {
         self.running.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the coordination server has acknowledged this node.
+    ///
+    /// Anything that tells a user they are "connected to the hive" must read
+    /// this, not `is_running`.
+    pub fn is_registered(&self) -> bool {
+        self.registered.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Check if the node has any connected peers.

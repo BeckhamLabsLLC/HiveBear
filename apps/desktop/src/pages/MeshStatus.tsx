@@ -132,23 +132,36 @@ export default function MeshStatus() {
             <div className="flex items-center gap-4">
               <div className={[
                 "flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)]",
-                connection.running ? "bg-success/10 text-success" : "bg-surface-overlay text-text-muted",
+                connection.registered
+                  ? "bg-success/10 text-success"
+                  : connection.running
+                    ? "bg-warning/10 text-warning"
+                    : "bg-surface-overlay text-text-muted",
               ].join(" ")}>
-                {connection.running ? <Wifi size={24} /> : <WifiOff size={24} />}
+                {connection.registered ? <Wifi size={24} /> : <WifiOff size={24} />}
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2">
+                  {/* "Connected" means the coordination server has acknowledged
+                      us, not merely that a local socket is open. Keying this off
+                      `running` claimed we were on the hive while offline. */}
                   <span className="text-base font-medium">
-                    {connection.running ? "Connected to Hive" : "Not Connected"}
+                    {connection.registered
+                      ? "Connected to Hive"
+                      : connection.running
+                        ? "Running locally — not on the hive"
+                        : "Not Connected"}
                   </span>
-                  {connection.running && (
+                  {connection.registered && (
                     <Badge variant="default">{connection.peer_count} peer{connection.peer_count !== 1 ? "s" : ""}</Badge>
                   )}
                 </div>
                 <p className="mt-0.5 text-sm text-text-muted">
-                  {connection.running
+                  {connection.registered
                     ? `Node ${connection.node_id?.slice(0, 12)}… registered and sending heartbeats`
-                    : "Click Join to register with the coordination server."}
+                    : connection.running
+                      ? "The coordination server is unreachable, so other peers cannot find you. Retrying in the background."
+                      : "Click Join to register with the coordination server."}
                 </p>
               </div>
               <Button
