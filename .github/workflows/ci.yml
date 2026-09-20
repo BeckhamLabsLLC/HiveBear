@@ -108,6 +108,13 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu
 
+      # rust-toolchain.toml pins the version, so the toolchain the action just
+      # set up is not the one cargo will use. Add the target to the pinned
+      # toolchain as well, or it cross-compiles without an aarch64 std and
+      # fails with "can't find crate for `core`".
+      - name: Add aarch64 target to the pinned toolchain
+        run: rustup target add aarch64-unknown-linux-gnu
+
       - name: Install cross-compilation tools
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
