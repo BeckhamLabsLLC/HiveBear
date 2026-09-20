@@ -29,6 +29,9 @@ bincode = "1"
 # Crypto
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
 sha2 = "0.10"
+# TURN long-term credentials: MESSAGE-INTEGRITY is HMAC-SHA1 (RFC 5389 §15.4).
+hmac = "0.12"
+sha1 = "0.10"
 rand = "0.8"
 
 # HTTP client (for coordination server)

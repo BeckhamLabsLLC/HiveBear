@@ -1,6 +1,7 @@
 pub mod holepunch;
 pub mod relay;
 pub mod stun;
+pub mod turn;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
