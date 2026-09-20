@@ -31,6 +31,8 @@ pub struct MeshNode {
     pub external_addr: tokio::sync::RwLock<Option<SocketAddr>>,
     /// Address we are listening on, once started.
     listen_addr: tokio::sync::RwLock<Option<SocketAddr>>,
+    /// The PeerInfo we registered with, kept so registration can be retried.
+    local_info: tokio::sync::RwLock<Option<PeerInfo>>,
     /// Reputation below which a peer is not worth connecting to.
     ///
     /// `MeshConfig::min_reputation` is validated on save and displayed in
@@ -74,6 +76,7 @@ impl MeshNode {
             tier,
             external_addr: tokio::sync::RwLock::new(None),
             listen_addr: tokio::sync::RwLock::new(None),
+            local_info: tokio::sync::RwLock::new(None),
             min_reputation: 0.0,
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
@@ -101,6 +104,7 @@ impl MeshNode {
             tier,
             external_addr: tokio::sync::RwLock::new(None),
             listen_addr: tokio::sync::RwLock::new(None),
+            local_info: tokio::sync::RwLock::new(None),
             min_reputation: 0.0,
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
@@ -124,6 +128,24 @@ impl MeshNode {
     pub fn with_min_reputation(mut self, min_reputation: f64) -> Self {
         self.min_reputation = min_reputation.clamp(0.0, 1.0);
         self
+    }
+
+    /// Re-send our registration after losing contact.
+    ///
+    /// Cheap and idempotent: the coordinator upserts by node id.
+    async fn try_reregister(&self) {
+        let info = match self.local_info.read().await.clone() {
+            Some(i) => i,
+            None => return,
+        };
+        match self.discovery.register(&info).await {
+            Ok(()) => {
+                info!("Re-registered with the coordination server");
+                self.registered
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(e) => debug!("Re-registration failed, will retry: {e}"),
+        }
     }
 
     /// Record the outcome of a verification challenge against a peer.
@@ -181,6 +203,7 @@ impl MeshNode {
         // reachable by strangers. Treat them separately so a coordinator
         // outage degrades to local-only instead of failing startup — and so
         // nothing can claim we are on the hive when we are not.
+        *self.local_info.write().await = Some(local_info.clone());
         let registration = self.discovery.register(&local_info).await;
         let registered = registration.is_ok();
         self.registered
@@ -243,6 +266,13 @@ impl MeshNode {
                                     warn!("Lost contact with the coordination server: {e}");
                                 }
                                 node.registered.store(false, std::sync::atomic::Ordering::Relaxed);
+                                // register() ran exactly once, at startup. A
+                                // coordinator restart, or a registration that
+                                // failed on the way up, therefore left the
+                                // node heartbeating forever against a server
+                                // that had never heard of it — invisible to
+                                // every peer, with no way back.
+                                node.try_reregister().await;
                             }
                         }
                     }

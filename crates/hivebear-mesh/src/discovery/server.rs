@@ -154,16 +154,27 @@ impl PeerDiscovery for CoordinationServerClient {
 
         let url = format!("{}/heartbeat", self.base_url);
         let req = self.authed(self.http.post(&url)).await.json(info);
+
+        // Report failures as failures. This returned Ok(()) for a rejected
+        // heartbeat *and* for an unreachable server, so a caller could not
+        // tell a live registration from a dead one — which would have made
+        // MeshNode's `registered` flag report success against a coordinator
+        // that had rejected us outright. Callers decide whether it is fatal;
+        // the maintenance loop treats it as "not registered, keep trying".
         match req.send().await {
             Ok(resp) if resp.status().is_success() => Ok(()),
             Ok(resp) => {
                 let status = resp.status();
-                warn!("Heartbeat returned {status}");
-                Ok(()) // Non-fatal
+                warn!("Heartbeat rejected with {status}");
+                Err(MeshError::Discovery(format!(
+                    "Coordination server rejected heartbeat: {status}"
+                )))
             }
             Err(e) if e.is_connect() || e.is_timeout() => {
                 debug!("Heartbeat skipped (server unreachable): {e}");
-                Ok(()) // Non-fatal
+                Err(MeshError::Discovery(format!(
+                    "Coordination server unreachable: {e}"
+                )))
             }
             Err(e) => Err(MeshError::Discovery(format!("Heartbeat failed: {e}"))),
         }
