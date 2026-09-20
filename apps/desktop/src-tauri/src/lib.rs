@@ -5,7 +5,7 @@ mod validation;
 
 use state::AppState;
 use tauri::Manager;
-use tracing::warn;
+use tracing::{error, warn};
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,15 +23,27 @@ pub fn run() {
         .setup(|app| {
             // On mobile, use Tauri's app data dir (Android internal storage).
             // On desktop, use the default ProjectDirs-based paths.
-            let app_state = if cfg!(target_os = "android") || cfg!(target_os = "ios") {
-                let base = app
-                    .path()
-                    .app_data_dir()
-                    .expect("Failed to resolve app data directory");
-                let paths = AppState::paths_from_base(base);
-                AppState::init_with_paths(paths)
+            let init_result = if cfg!(target_os = "android") || cfg!(target_os = "ios") {
+                match app.path().app_data_dir() {
+                    Ok(base) => AppState::init_with_paths(AppState::paths_from_base(base)),
+                    Err(e) => Err(format!("Could not resolve the app data directory.\n\n{e}")),
+                }
             } else {
                 AppState::init()
+            };
+
+            // Startup used to panic here. That happens inside setup(), before
+            // any window exists, so the process just vanished — no window, no
+            // dialog, nothing an ordinary user could find. Report it somewhere
+            // retrievable and exit deliberately instead.
+            let app_state = match init_result {
+                Ok(state) => state,
+                Err(message) => {
+                    error!("HiveBear could not start: {message}");
+                    eprintln!("HiveBear could not start:\n{message}");
+                    write_startup_failure(&message);
+                    std::process::exit(1);
+                }
             };
             // Auto-start mesh if enabled and auto_join is configured
             {
@@ -98,5 +110,37 @@ pub fn run() {
             commands::device::can_contribute_to_mesh,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running HiveBear");
+        .unwrap_or_else(|e| {
+            error!("HiveBear exited with an error: {e}");
+            eprintln!("HiveBear exited with an error: {e}");
+            write_startup_failure(&e.to_string());
+            std::process::exit(1);
+        });
+}
+
+/// Record a startup failure where a user can actually be pointed at it.
+/// The data directory may itself be the thing that is broken, so fall back to
+/// the temp directory.
+fn write_startup_failure(message: &str) {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let body = format!(
+        "HiveBear {} startup failure\n\n{message}\n",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    let candidates = [
+        hivebear_core::AppPaths::new()
+            .data_dir
+            .join("startup-error.log"),
+        std::env::temp_dir().join(format!("hivebear-startup-error-{stamp}.log")),
+    ];
+    for path in candidates {
+        if std::fs::write(&path, &body).is_ok() {
+            eprintln!("Details written to {}", path.display());
+            return;
+        }
+    }
 }

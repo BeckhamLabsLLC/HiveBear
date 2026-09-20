@@ -5,7 +5,7 @@ use hivebear_persistence::ChatDatabase;
 use hivebear_registry::Registry;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
@@ -20,25 +20,67 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn init() -> Self {
+    pub fn init() -> Result<Self, String> {
         Self::init_with_paths(AppPaths::new())
     }
 
     /// Initialize with explicit paths — used on Android where the default
     /// `ProjectDirs` paths point to read-only locations.
-    pub fn init_with_paths(paths: AppPaths) -> Self {
-        paths
-            .ensure_dirs()
-            .expect("Failed to create app directories");
+    ///
+    /// Returns an error rather than panicking. These three steps all touch the
+    /// filesystem, and they run inside `Builder::setup` before any window
+    /// exists — so a panic here produced a process that died with no window,
+    /// no dialog, and no log an ordinary user could find. That is the classic
+    /// "I double-clicked it and nothing happened" report. The caller is
+    /// responsible for showing the message.
+    pub fn init_with_paths(paths: AppPaths) -> Result<Self, String> {
+        paths.ensure_dirs().map_err(|e| {
+            format!(
+                "Could not create HiveBear's data directories under {}.\n\n{e}",
+                paths.data_dir.display()
+            )
+        })?;
 
         let config = Config::load();
         let profile = hivebear_core::profile();
         let orchestrator = Orchestrator::with_config(profile.clone(), &config);
-        let registry = tauri::async_runtime::block_on(Registry::new(&config, &paths))
-            .expect("Failed to initialize model registry");
-        let chat_db = ChatDatabase::open(&paths.db_file).expect("Failed to open chat database");
 
-        Self {
+        // A corrupt registry index or chat database used to be fatal, which
+        // meant the app died during setup with no window and no way for the
+        // user to recover. Both are caches of recoverable state, so quarantine
+        // the bad file and rebuild instead of refusing to start.
+        let registry_file = paths.data_dir.join("registry.json");
+        let registry = match tauri::async_runtime::block_on(Registry::new(&config, &paths)) {
+            Ok(r) => r,
+            Err(first) => {
+                warn!("Model registry failed to open ({first}); quarantining and rebuilding");
+                quarantine(&registry_file);
+                tauri::async_runtime::block_on(Registry::new(&config, &paths)).map_err(|e| {
+                    format!(
+                        "Could not open the model registry at {}, even after moving \
+                         the existing one aside.\n\n{e}",
+                        registry_file.display()
+                    )
+                })?
+            }
+        };
+
+        let chat_db = match ChatDatabase::open(&paths.db_file) {
+            Ok(db) => db,
+            Err(first) => {
+                warn!("Chat database failed to open ({first}); quarantining and rebuilding");
+                quarantine(&paths.db_file);
+                ChatDatabase::open(&paths.db_file).map_err(|e| {
+                    format!(
+                        "Could not open the chat database at {}, even after moving \
+                         the existing one aside.\n\n{e}",
+                        paths.db_file.display()
+                    )
+                })?
+            }
+        };
+
+        Ok(Self {
             config: Mutex::new(config),
             profile,
             orchestrator,
@@ -47,7 +89,7 @@ impl AppState {
             paths,
             http_client: reqwest::Client::new(),
             mesh_node: Mutex::new(None),
-        }
+        })
     }
 
     /// Start the mesh node: register with the coordination server and begin heartbeats.
@@ -152,5 +194,29 @@ impl AppState {
             cache_dir: base.join("cache"),
             benchmark_cache: base.join("cache").join("benchmark.json"),
         }
+    }
+}
+
+/// Move a file out of the way so it can be recreated from scratch, keeping the
+/// original for diagnosis. Best-effort: if the rename fails there is nothing
+/// useful left to do, and the caller reports the follow-up error.
+fn quarantine(path: &std::path::Path) {
+    if !path.exists() {
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut backup = path.to_path_buf();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    backup.set_file_name(format!("{name}.corrupt-{stamp}"));
+
+    match std::fs::rename(path, &backup) {
+        Ok(()) => warn!("Moved {} to {}", path.display(), backup.display()),
+        Err(e) => warn!("Could not move {} aside: {e}", path.display()),
     }
 }
