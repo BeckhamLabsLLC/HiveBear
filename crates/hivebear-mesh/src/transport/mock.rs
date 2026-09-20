@@ -58,6 +58,19 @@ impl MockTransport {
     fn node_key(id: &NodeId) -> Vec<u8> {
         id.0.to_bytes().to_vec()
     }
+
+    /// This transport's node id.
+    pub fn local_id(&self) -> &NodeId {
+        &self.local_id
+    }
+
+    /// Give this transport a one-way route to `other`, without going through
+    /// listen/connect. Test helper for wiring up more than two nodes, which
+    /// `create_linked_pair` cannot express.
+    pub fn connect_for_test(&self, other: &MockTransport) {
+        self.peers
+            .insert(Self::node_key(&other.local_id), Arc::clone(&other.inbox));
+    }
 }
 
 #[async_trait]
