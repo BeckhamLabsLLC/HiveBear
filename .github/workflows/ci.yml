@@ -8,6 +8,13 @@ on:
   pull_request:
     branches: [main]
 
+# Supersede in-flight runs for the same ref. Without this, pushing a few
+# commits in a row leaves several ~25-minute runs competing for runners and
+# starving the one that matters.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
