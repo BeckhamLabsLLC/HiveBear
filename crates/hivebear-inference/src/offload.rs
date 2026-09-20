@@ -57,30 +57,26 @@ pub fn calculate_offload_with_mesh(
     };
 
     // How many layers fit in GPU VRAM?
-    let gpu_layers = if bytes_per_layer > 0 {
-        (usable_vram / bytes_per_layer).min(num_layers as u64) as u32
-    } else {
-        num_layers
+    let gpu_layers = match usable_vram.checked_div(bytes_per_layer) {
+        Some(n) => n.min(num_layers as u64) as u32,
+        None => num_layers,
     };
 
     let mut remaining_layers = num_layers.saturating_sub(gpu_layers);
 
     // How many remaining layers fit in CPU RAM?
-    let cpu_layers = if bytes_per_layer > 0 {
-        let cpu_fit = (available_ram / bytes_per_layer) as u32;
-        cpu_fit.min(remaining_layers)
-    } else {
-        remaining_layers
+    let cpu_layers = match available_ram.checked_div(bytes_per_layer) {
+        Some(cpu_fit) => (cpu_fit as u32).min(remaining_layers),
+        None => remaining_layers,
     };
     remaining_layers = remaining_layers.saturating_sub(cpu_layers);
 
     // How many remaining layers can be offloaded to mesh peers?
     let mesh_layers = if remaining_layers > 0 {
         if let Some(mesh_cap) = mesh_capacity_bytes {
-            let mesh_fit = if bytes_per_layer > 0 {
-                (mesh_cap / bytes_per_layer) as u32
-            } else {
-                remaining_layers
+            let mesh_fit = match mesh_cap.checked_div(bytes_per_layer) {
+                Some(n) => n as u32,
+                None => remaining_layers,
             };
             let assigned = mesh_fit.min(remaining_layers);
             remaining_layers = remaining_layers.saturating_sub(assigned);

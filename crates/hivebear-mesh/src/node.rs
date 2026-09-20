@@ -29,13 +29,34 @@ pub struct MeshNode {
     pub tier: MeshTier,
     /// Our STUN-discovered external address (populated on start).
     pub external_addr: tokio::sync::RwLock<Option<SocketAddr>>,
+    /// Address we are listening on, once started.
+    listen_addr: tokio::sync::RwLock<Option<SocketAddr>>,
+    /// The PeerInfo we registered with, kept so registration can be retried.
+    local_info: tokio::sync::RwLock<Option<PeerInfo>>,
+    /// Reputation below which a peer is not worth connecting to.
+    ///
+    /// `MeshConfig::min_reputation` is validated on save and displayed in
+    /// Settings, but nothing read it — only the hard ban threshold applied,
+    /// so the setting did nothing at any value.
+    min_reputation: f64,
     /// STUN servers for NAT detection.
     pub stun_servers: Vec<String>,
     /// Relay servers for symmetric NAT fallback.
     pub relay_servers: Vec<String>,
     running: std::sync::atomic::AtomicBool,
+    /// Whether the coordination server has acknowledged us. Distinct from
+    /// `running`: the local node can be listening happily while the
+    /// coordinator is unreachable, and the UI must not conflate the two.
+    registered: std::sync::atomic::AtomicBool,
     shutdown: Arc<Notify>,
 }
+
+/// How many peer connection attempts to run at once during a discovery sweep.
+const MAX_CONCURRENT_CONNECTS: usize = 8;
+
+/// Upper bound on one discovery sweep, so it cannot monopolise the
+/// maintenance loop no matter how many peers are unreachable.
+const DISCOVERY_SWEEP_BUDGET: Duration = Duration::from_secs(45);
 
 impl MeshNode {
     pub fn new(
@@ -54,9 +75,13 @@ impl MeshNode {
             reputation: tokio::sync::Mutex::new(ReputationManager::new(reputation_path)),
             tier,
             external_addr: tokio::sync::RwLock::new(None),
+            listen_addr: tokio::sync::RwLock::new(None),
+            local_info: tokio::sync::RwLock::new(None),
+            min_reputation: 0.0,
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
+            registered: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
     }
@@ -78,9 +103,13 @@ impl MeshNode {
             reputation: tokio::sync::Mutex::new(ReputationManager::new(reputation_path)),
             tier,
             external_addr: tokio::sync::RwLock::new(None),
+            listen_addr: tokio::sync::RwLock::new(None),
+            local_info: tokio::sync::RwLock::new(None),
+            min_reputation: 0.0,
             stun_servers: vec!["stun.l.google.com:19302".into()],
             relay_servers: vec!["relay.hivebear.com:3478".into()],
             running: std::sync::atomic::AtomicBool::new(false),
+            registered: std::sync::atomic::AtomicBool::new(false),
             shutdown: Arc::new(Notify::new()),
         }
     }
@@ -89,29 +118,108 @@ impl MeshNode {
     ///
     /// Automatically discovers external address via STUN before registering,
     /// so the coordinator knows how other peers can reach us.
+    /// Override the NAT helper servers.
+    ///
+    /// `MeshConfig::stun_servers` and `relay_servers` are parsed, persisted
+    /// and shown in Settings, but both constructors hardcoded their own
+    /// values and never consulted the config — so changing either setting did
+    /// nothing. Callers should pass the configured lists through here.
+    /// Refuse peers whose reputation is below `min_reputation`.
+    pub fn with_min_reputation(mut self, min_reputation: f64) -> Self {
+        self.min_reputation = min_reputation.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Re-send our registration after losing contact.
+    ///
+    /// Cheap and idempotent: the coordinator upserts by node id.
+    async fn try_reregister(&self) {
+        let info = match self.local_info.read().await.clone() {
+            Some(i) => i,
+            None => return,
+        };
+        match self.discovery.register(&info).await {
+            Ok(()) => {
+                info!("Re-registered with the coordination server");
+                self.registered
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(e) => debug!("Re-registration failed, will retry: {e}"),
+        }
+    }
+
+    /// Record the outcome of a verification challenge against a peer.
+    ///
+    /// Nothing called into ReputationManager before this, so scores never
+    /// moved off the neutral 0.5 and `is_banned` could never become true no
+    /// matter how a peer behaved.
+    pub async fn record_verification(&self, peer: &NodeId, passed: bool) {
+        let mut rep = self.reputation.lock().await;
+        rep.record_verification(peer, passed);
+        let score = rep.score(peer);
+        if passed {
+            debug!("Verification passed for {peer}; score now {score:.2}");
+        } else {
+            warn!("Verification FAILED for {peer}; score now {score:.2}");
+        }
+        if rep.is_banned(peer) {
+            warn!("Peer {peer} is now below the ban threshold and will be skipped");
+        }
+    }
+
+    pub fn with_nat_servers(
+        mut self,
+        stun_servers: Vec<String>,
+        relay_servers: Vec<String>,
+    ) -> Self {
+        if !stun_servers.is_empty() {
+            self.stun_servers = stun_servers;
+        }
+        if !relay_servers.is_empty() {
+            self.relay_servers = relay_servers;
+        }
+        self
+    }
+
     pub async fn start(&self, listen_addr: SocketAddr, mut local_info: PeerInfo) -> Result<()> {
         info!("Starting mesh node {} on {}", self.local_id, listen_addr);
 
-        // Discover external address via STUN (non-blocking, best-effort)
-        if let Some(stun_server) = self.stun_servers.first() {
-            match nat::stun::discover_external_addr(stun_server).await {
-                Ok(ext_addr) => {
-                    info!("STUN discovered external address: {ext_addr}");
-                    *self.external_addr.write().await = Some(ext_addr);
-                    local_info.external_addr = Some(ext_addr);
-                }
-                Err(e) => {
-                    debug!("STUN discovery failed (non-fatal): {e}");
-                }
-            }
+        // Listen first: the transport probes STUN on the socket it is about
+        // to serve on. Doing it here, on a throwaway socket, reported a NAT
+        // mapping for a port nothing was listening on — useless for hole
+        // punching on anything stricter than a full-cone NAT.
+        self.transport.listen(listen_addr).await?;
+        *self.listen_addr.write().await = Some(listen_addr);
+
+        if let Some(ext_addr) = self.transport.discovered_external_addr().await {
+            info!("External address for {listen_addr}: {ext_addr}");
+            *self.external_addr.write().await = Some(ext_addr);
+            local_info.external_addr = Some(ext_addr);
+        } else {
+            debug!("No external address discovered; advertising {listen_addr} only");
         }
 
-        self.transport.listen(listen_addr).await?;
-        self.discovery.register(&local_info).await?;
+        // Listening is what makes us runnable; registration is what makes us
+        // reachable by strangers. Treat them separately so a coordinator
+        // outage degrades to local-only instead of failing startup — and so
+        // nothing can claim we are on the hive when we are not.
+        *self.local_info.write().await = Some(local_info.clone());
+        let registration = self.discovery.register(&local_info).await;
+        let registered = registration.is_ok();
+        self.registered
+            .store(registered, std::sync::atomic::Ordering::Relaxed);
         self.running
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        info!("Mesh node {} is running", self.local_id);
+        match registration {
+            Ok(()) => info!("Mesh node {} is running and registered", self.local_id),
+            Err(e) => warn!(
+                "Mesh node {} is running but NOT registered with the coordination \
+                 server ({e}); it will retry on the next heartbeat. Peers cannot \
+                 discover this node until then.",
+                self.local_id
+            ),
+        }
         Ok(())
     }
 
@@ -129,6 +237,10 @@ impl MeshNode {
             let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(60));
             let mut health_interval = tokio::time::interval(Duration::from_secs(30));
             let mut discovery_interval = tokio::time::interval(Duration::from_secs(120));
+            // Punch requests are time-sensitive: the far side is dialling
+            // *now*, so a slow poll means the window has closed by the time
+            // we answer.
+            let mut signal_interval = tokio::time::interval(Duration::from_secs(3));
 
             // Don't fire immediately for health/discovery
             health_interval.tick().await;
@@ -142,8 +254,26 @@ impl MeshNode {
                     }
                     _ = heartbeat_interval.tick() => {
                         if !node.is_running() { break; }
-                        if let Err(e) = node.discovery.heartbeat().await {
-                            debug!("Heartbeat failed (non-fatal): {e}");
+                        match node.discovery.heartbeat().await {
+                            Ok(()) => {
+                                if !node.is_registered() {
+                                    info!("Re-established contact with the coordination server");
+                                }
+                                node.registered.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                if node.is_registered() {
+                                    warn!("Lost contact with the coordination server: {e}");
+                                }
+                                node.registered.store(false, std::sync::atomic::Ordering::Relaxed);
+                                // register() ran exactly once, at startup. A
+                                // coordinator restart, or a registration that
+                                // failed on the way up, therefore left the
+                                // node heartbeating forever against a server
+                                // that had never heard of it — invisible to
+                                // every peer, with no way back.
+                                node.try_reregister().await;
+                            }
                         }
                     }
                     _ = health_interval.tick() => {
@@ -153,6 +283,10 @@ impl MeshNode {
                     _ = discovery_interval.tick() => {
                         if !node.is_running() { break; }
                         node.discover_and_connect_peers().await;
+                    }
+                    _ = signal_interval.tick() => {
+                        if !node.is_running() { break; }
+                        node.handle_pending_signals().await;
                     }
                 }
             }
@@ -211,6 +345,7 @@ impl MeshNode {
             }
         };
 
+        let mut candidates = Vec::new();
         for peer_info in peers {
             // Skip self
             if peer_info.node_id == self.local_id {
@@ -230,28 +365,107 @@ impl MeshNode {
                     debug!("Skipping banned peer {}", peer_info.node_id);
                     continue;
                 }
+                let score = rep.score(&peer_info.node_id);
+                if score < self.min_reputation {
+                    debug!(
+                        "Skipping {}: reputation {score:.2} is below the configured minimum {:.2}",
+                        peer_info.node_id, self.min_reputation
+                    );
+                    continue;
+                }
             }
 
-            match self.connect_with_nat_traversal(&peer_info).await {
-                Ok(connected_id) => {
-                    info!(
-                        "Auto-connected to peer {} at {}",
-                        connected_id, peer_info.addr
-                    );
-                    let key = connected_id.0.to_bytes().to_vec();
-                    self.peers.insert(key, (peer_info, PeerState::Connected));
+            candidates.push(peer_info);
+        }
+
+        if candidates.is_empty() {
+            return;
+        }
+
+        // Connect concurrently, bounded.
+        //
+        // This used to be a sequential loop, and each unreachable peer costs
+        // seconds of timeouts. It runs inside one arm of the maintenance
+        // `select!`, so with a couple of dozen peers the arm could occupy the
+        // loop for minutes — during which heartbeats (60s) and health checks
+        // (30s) never fired and the coordinator dropped us for being silent.
+        // The whole sweep is also capped, so a pathological peer list cannot
+        // stall the next tick.
+        use futures::stream::StreamExt;
+        let attempts = futures::stream::iter(candidates.into_iter().map(|peer_info| async move {
+            let result = self.connect_with_nat_traversal(&peer_info).await;
+            (peer_info, result)
+        }))
+        .buffer_unordered(MAX_CONCURRENT_CONNECTS);
+
+        let sweep = tokio::time::timeout(
+            DISCOVERY_SWEEP_BUDGET,
+            attempts.for_each(|(peer_info, result)| async move {
+                match result {
+                    Ok(connected_id) => {
+                        info!(
+                            "Auto-connected to peer {} at {}",
+                            connected_id, peer_info.addr
+                        );
+                        let key = connected_id.0.to_bytes().to_vec();
+                        self.peers.insert(key, (peer_info, PeerState::Connected));
+                    }
+                    Err(e) => {
+                        debug!(
+                            "All connection strategies failed for peer {}: {e}",
+                            peer_info.node_id
+                        );
+                    }
                 }
-                Err(e) => {
-                    debug!(
-                        "All connection strategies failed for peer {}: {e}",
-                        peer_info.node_id
-                    );
-                }
-            }
+            }),
+        )
+        .await;
+
+        if sweep.is_err() {
+            debug!(
+                "Peer connection sweep hit its {:?} budget; remaining peers wait for the next tick",
+                DISCOVERY_SWEEP_BUDGET
+            );
         }
 
         if self.peer_count() > 0 {
             debug!("Connected to {} mesh peers", self.peer_count());
+        }
+    }
+
+    /// Answer signalling messages relayed by the coordinator.
+    ///
+    /// Currently one kind: a peer asking us to dial it so both sides punch
+    /// simultaneously. Our outbound packet opens our NAT for theirs; without
+    /// it, their punch attempts hit a closed mapping and hole punching
+    /// cannot work at all.
+    async fn handle_pending_signals(&self) {
+        let signals = match self.discovery.poll_signals().await {
+            Ok(s) => s,
+            Err(e) => {
+                debug!("Signal poll failed (non-fatal): {e}");
+                return;
+            }
+        };
+
+        for signal in signals {
+            let Some(target) = nat::holepunch::punch_target_from_signal(&signal) else {
+                continue;
+            };
+
+            debug!("Punch request received; dialling {target} back");
+            // Best effort and deliberately short: the point is to emit
+            // packets toward them, not to wait for a result. If the
+            // connection lands, all the better.
+            let transport = Arc::clone(&self.transport);
+            tokio::spawn(async move {
+                match tokio::time::timeout(Duration::from_secs(3), transport.connect(target)).await
+                {
+                    Ok(Ok(id)) => info!("Punch-back to {target} connected as {id}"),
+                    Ok(Err(e)) => debug!("Punch-back to {target} failed: {e}"),
+                    Err(_) => debug!("Punch-back to {target} timed out"),
+                }
+            });
         }
     }
 
@@ -283,25 +497,47 @@ impl MeshNode {
             }
         }
 
-        // Strategy 3: Hole-punch — both sides send QUIC handshakes simultaneously
+        // Strategy 3: Hole-punch — both sides dial at once.
+        //
+        // A punch only works if the peer is dialling us at the same time;
+        // its outbound packet is what opens its NAT for ours. Previously
+        // nothing told the peer to start, so this was just a slower retry of
+        // the direct connect that had already failed. Ask the coordinator to
+        // relay a punch-request first, then dial repeatedly while the peer
+        // (on receiving it) dials back.
         let our_ext = *self.external_addr.read().await;
         if our_ext.is_some() || peer.external_addr.is_some() {
             let target = peer.external_addr.unwrap_or(peer.addr);
-            debug!("Attempting hole-punch to {} at {}", peer.node_id, target);
+
+            // Tell the peer where to dial us. Prefer the NAT-mapped address;
+            // fall back to whatever we are listening on.
+            let reachable_at = match our_ext {
+                Some(a) => Some(a.to_string()),
+                None => self.listen_addr().await.map(|a| a.to_string()),
+            };
+            if let Err(e) = self
+                .discovery
+                .send_signal(
+                    &peer.node_id.to_hex(),
+                    nat::holepunch::PUNCH_REQUEST,
+                    reachable_at.as_deref(),
+                )
+                .await
+            {
+                debug!("Could not signal {} to punch: {e}", peer.node_id);
+            }
+
             match nat::holepunch::attempt_holepunch(
                 self.transport.as_ref(),
                 peer,
-                our_ext,
+                target,
                 Duration::from_secs(5),
             )
             .await
             {
-                Ok(()) => {
-                    // Hole punch succeeded — peer should be connected via transport
-                    if let Ok(id) = self.transport.connect(target).await {
-                        debug!("Hole-punch succeeded to {}", peer.node_id);
-                        return Ok(id);
-                    }
+                Ok(id) => {
+                    debug!("Hole-punch succeeded to {}", peer.node_id);
+                    return Ok(id);
                 }
                 Err(e) => {
                     debug!("Hole-punch failed for {}: {e}", peer.node_id);
@@ -309,24 +545,43 @@ impl MeshNode {
             }
         }
 
-        // Strategy 4: Relay fallback
-        if !self.relay_servers.is_empty() {
-            let relay_client = nat::relay::RelayClient::new(self.relay_servers.clone());
-            if relay_client.is_available().await {
-                debug!("Requesting relay for {}", peer.node_id);
-                match relay_client.allocate_relay(peer).await {
-                    Ok(relay_addr) => {
-                        if let Ok(id) = self.transport.connect(relay_addr).await {
-                            info!("Connected to {} via relay at {}", peer.node_id, relay_addr);
-                            return Ok(id);
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Relay allocation failed for {}: {e}", peer.node_id);
-                    }
+        // Strategy 4: relay.
+        //
+        // Only a node behind a symmetric NAT needs an allocation; everyone
+        // else just dials the relayed address it advertises, which
+        // strategies 1 and 2 already do. What this node must do is authorise
+        // the peer, or its relay drops their return traffic.
+        let target = peer.external_addr.unwrap_or(peer.addr);
+        match self.transport.relay_to(target).await {
+            Ok(()) => {
+                if let Ok(id) =
+                    tokio::time::timeout(Duration::from_secs(5), self.transport.connect(target))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(crate::error::MeshError::Transport(
+                                "relay connect timed out".into(),
+                            ))
+                        })
+                {
+                    info!("Connected to {} via the relay", peer.node_id);
+                    return Ok(id);
                 }
             }
+            Err(e) => debug!("Relay unavailable for {}: {e}", peer.node_id),
         }
+
+        // Note on the old strategy 4.
+        //
+        // nat::relay is not a TURN client: it POSTs JSON to port 3478 — the
+        // TURN port — and performs no allocation, permission or channel-bind
+        // exchange. There is also no server behind it; relay.hivebear.com
+        // does not resolve. Attempting it cost roughly 15s per unreachable
+        // peer (is_available 5s + allocate 10s), sequentially, inside the
+        // maintenance loop, which is a large part of why heartbeats and
+        // health checks were starved.
+        //
+        // Symmetric NATs need a real TURN client *and* a deployed TURN
+        // server. Until both exist, failing fast is the honest outcome.
 
         Err(crate::error::MeshError::Transport(format!(
             "All connection strategies exhausted for peer {}",
@@ -381,9 +636,25 @@ impl MeshNode {
         Ok(())
     }
 
-    /// Check if the node is running.
+    /// Check if the node is running (listening locally).
+    ///
+    /// This does NOT mean the coordination server knows about us — use
+    /// [`Self::is_registered`] for that.
     pub fn is_running(&self) -> bool {
         self.running.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Address this node is listening on, once started.
+    pub async fn listen_addr(&self) -> Option<SocketAddr> {
+        *self.listen_addr.read().await
+    }
+
+    /// Whether the coordination server has acknowledged this node.
+    ///
+    /// Anything that tells a user they are "connected to the hive" must read
+    /// this, not `is_running`.
+    pub fn is_registered(&self) -> bool {
+        self.registered.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Check if the node has any connected peers.

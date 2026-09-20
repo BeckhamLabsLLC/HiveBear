@@ -19,11 +19,15 @@ pub fn detect_format(path: &Path) -> Result<ModelFormat> {
         "safetensors" => Ok(ModelFormat::SafeTensors),
         "mlx" | "npz" => Ok(ModelFormat::Mlx),
         _ => {
-            // Try reading magic bytes for GGUF
-            if let Ok(bytes) = std::fs::read(path).map(|b| b[..4].to_vec()) {
-                if &bytes == b"GGUF" {
-                    return Ok(ModelFormat::Gguf);
-                }
+            // Read just the magic bytes.
+            //
+            // This used to be `std::fs::read(path).map(|b| b[..4].to_vec())`,
+            // which pulls the *entire* file into memory to look at four bytes
+            // — an OOM on a 40 GB model with an unrecognised extension — and
+            // panics with index-out-of-bounds on anything shorter than four
+            // bytes, such as a truncated download or a zero-byte placeholder.
+            if read_magic(path) == Some(*b"GGUF") {
+                return Ok(ModelFormat::Gguf);
             }
             Err(InferenceError::UnsupportedFormat(format!(
                 "Cannot determine format for: {}",
@@ -31,6 +35,16 @@ pub fn detect_format(path: &Path) -> Result<ModelFormat> {
             )))
         }
     }
+}
+
+/// First four bytes of `path`, or `None` if it cannot be read or is shorter.
+fn read_magic(path: &Path) -> Option<[u8; 4]> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).ok()?;
+    Some(magic)
 }
 
 /// Select the best available engine for a given model format and hardware profile.
@@ -44,6 +58,22 @@ pub fn select_engine<'a>(
     registry: &'a EngineRegistry,
     format: ModelFormat,
     profile: &HardwareProfile,
+) -> Result<&'a dyn InferenceBackend> {
+    select_engine_for(registry, format, profile, false)
+}
+
+/// Pick a backend, optionally restricted to ones that can serve a pipeline
+/// stage.
+///
+/// When `needs_pipeline` is set, backends that cannot honour
+/// `LoadConfig::pipeline_stage` are skipped entirely rather than selected and
+/// then failing on the first `forward_partial`. On this path llama.cpp is not
+/// a candidate at all: it ignores the stage config and loads the whole model.
+pub fn select_engine_for<'a>(
+    registry: &'a EngineRegistry,
+    format: ModelFormat,
+    profile: &HardwareProfile,
+    needs_pipeline: bool,
 ) -> Result<&'a dyn InferenceBackend> {
     let has_gpu = !profile.gpus.is_empty();
     let is_apple_silicon = profile.platform.os == "macos" && profile.platform.arch == "aarch64";
@@ -75,16 +105,36 @@ pub fn select_engine<'a>(
 
     for engine_id in &priority {
         if let Some(backend) = registry.get(*engine_id) {
-            if backend.supported_formats().contains(&format) {
-                tracing::info!(
-                    engine = backend.name(),
-                    format = %format,
-                    has_gpu = has_gpu,
-                    "Selected inference engine"
-                );
-                return Ok(backend);
+            if !backend.supported_formats().contains(&format) {
+                continue;
             }
+            if needs_pipeline && !backend.supports_pipeline() {
+                tracing::debug!(
+                    engine = backend.name(),
+                    "Skipping: cannot serve a pipeline stage"
+                );
+                continue;
+            }
+            tracing::info!(
+                engine = backend.name(),
+                format = %format,
+                has_gpu = has_gpu,
+                pipeline = needs_pipeline,
+                "Selected inference engine"
+            );
+            return Ok(backend);
         }
+    }
+
+    // A pipeline stage has a hard requirement; do not fall back to a backend
+    // that would silently load the whole model, and never to the mesh (this
+    // node *is* the mesh worker).
+    if needs_pipeline {
+        return Err(InferenceError::NoEngineAvailable {
+            format: format!(
+                "{format} with pipeline-parallel support (only Candle implements                  forward_partial; enable the `candle` feature)"
+            ),
+        });
     }
 
     // Last resort: find any backend that supports this format
@@ -149,6 +199,124 @@ mod tests {
                 power_source: PowerSource::Ac,
             },
         }
+    }
+
+    /// A backend that serves GGUF but cannot run a pipeline stage — the
+    /// shape llama.cpp has.
+    struct NoPipelineBackend;
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    impl crate::engine::InferenceBackend for NoPipelineBackend {
+        fn engine_id(&self) -> InferenceEngine {
+            InferenceEngine::LlamaCpp
+        }
+        fn name(&self) -> &str {
+            "NoPipeline"
+        }
+        fn supported_formats(&self) -> &[ModelFormat] {
+            &[ModelFormat::Gguf]
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        async fn load_model(
+            &self,
+            path: &std::path::Path,
+            _config: &crate::types::LoadConfig,
+        ) -> crate::error::Result<crate::types::ModelHandle> {
+            Ok(crate::types::ModelHandle::new(
+                path.to_path_buf(),
+                self.engine_id(),
+            ))
+        }
+        async fn generate(
+            &self,
+            _handle: &crate::types::ModelHandle,
+            _req: &crate::types::GenerateRequest,
+        ) -> crate::error::Result<crate::types::GenerateResponse> {
+            unimplemented!("not exercised by selection tests")
+        }
+        fn stream(
+            &self,
+            _handle: &crate::types::ModelHandle,
+            _req: &crate::types::GenerateRequest,
+        ) -> crate::engine::TokenStream {
+            unimplemented!("not exercised by selection tests")
+        }
+        async fn unload(&self, _handle: &crate::types::ModelHandle) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The regression: a pipeline stage was handed to llama.cpp, which
+    /// ignores `pipeline_stage` entirely. The worker loaded the whole model,
+    /// reported `ready: true`, and only failed later on the first
+    /// forward_partial — so a node assigned 8 of 80 layers still needed
+    /// memory for all 80.
+    #[test]
+    fn pipeline_stage_refuses_a_backend_that_cannot_serve_one() {
+        let mut registry = EngineRegistry::empty();
+        registry.register(Box::new(NoPipelineBackend));
+        let profile = test_profile("linux", "x86_64", false);
+
+        // Fine for ordinary inference.
+        assert!(
+            select_engine_for(&registry, ModelFormat::Gguf, &profile, false).is_ok(),
+            "a non-pipeline backend is still valid for normal loads"
+        );
+
+        // Not acceptable for a pipeline stage.
+        match select_engine_for(&registry, ModelFormat::Gguf, &profile, true) {
+            Ok(backend) => panic!(
+                "selected {} for a pipeline stage; it cannot serve one",
+                backend.name()
+            ),
+            Err(err) => assert!(
+                format!("{err}").contains("pipeline"),
+                "error should say why: {err}"
+            ),
+        }
+    }
+
+    /// Whatever the feature set, a pipeline selection must never return a
+    /// backend that cannot actually serve a stage.
+    #[test]
+    fn pipeline_selection_only_ever_returns_capable_backends() {
+        let registry = EngineRegistry::new();
+        let profile = test_profile("linux", "x86_64", false);
+        for format in [ModelFormat::Gguf, ModelFormat::SafeTensors] {
+            if let Ok(backend) = select_engine_for(&registry, format, &profile, true) {
+                assert!(
+                    backend.supports_pipeline(),
+                    "{} was selected for a pipeline stage but cannot serve one",
+                    backend.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detect_format_survives_a_short_file() {
+        let dir = std::env::temp_dir().join(format!("hb-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Two bytes, no recognised extension. The old code sliced [..4] on
+        // this and panicked.
+        let short = dir.join("truncated.partial");
+        std::fs::write(&short, b"GG").unwrap();
+        assert!(detect_format(&short).is_err());
+
+        let empty = dir.join("empty.partial");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(detect_format(&empty).is_err());
+
+        // Magic bytes still work without an extension.
+        let magic = dir.join("headless");
+        std::fs::write(&magic, b"GGUF and then some more content").unwrap();
+        assert_eq!(detect_format(&magic).unwrap(), ModelFormat::Gguf);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

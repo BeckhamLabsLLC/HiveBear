@@ -24,6 +24,28 @@ pub trait PeerDiscovery: Send + Sync {
 
     /// Deregister this node from the discovery service.
     async fn deregister(&self) -> Result<()>;
+
+    /// Relay a signalling message to another peer.
+    ///
+    /// Used to coordinate NAT hole punching: both sides must start dialling
+    /// at roughly the same moment, and only the coordinator can reach a peer
+    /// that is not yet reachable directly. Defaults to a no-op so discovery
+    /// backends without a relay (mDNS, PEX) need not implement it.
+    /// `action` and `from_addr` are the coordinator's `Signal` fields; do not
+    /// invent others, as anything it does not declare is dropped by serde.
+    async fn send_signal(
+        &self,
+        _to_node: &str,
+        _action: &str,
+        _from_addr: Option<&str>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Collect signalling messages addressed to this node.
+    async fn poll_signals(&self) -> Result<Vec<serde_json::Value>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Mock discovery for testing: holds peers in memory.

@@ -83,15 +83,14 @@ brew install BeckhamLabsLLC/hivebear/hivebear
 scoop bucket add hivebear https://github.com/BeckhamLabsLLC/scoop-hivebear
 scoop install hivebear
 
-# Docker
-docker run -it --rm -p 11434:11434 ghcr.io/beckhamlabsllc/hivebear quickstart
-
-# Docker with NVIDIA GPU
-docker run -it --rm --gpus all -p 11434:11434 ghcr.io/beckhamlabsllc/hivebear:latest-cuda quickstart
-
 # Build from source
 cargo install --git https://github.com/BeckhamLabsLLC/HiveBear hivebear-cli
 ```
+
+> **Docker images are not published yet.** The `build-docker` jobs have failed
+> on every release so far, so `ghcr.io/beckhamlabsllc/hivebear` does not exist.
+> The Dockerfiles in this repo do build locally; the published-image
+> instructions will return once a release pushes one successfully.
 
 ## What Your Hardware Can Run
 

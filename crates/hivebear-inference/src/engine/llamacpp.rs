@@ -288,10 +288,11 @@ fn generate_blocking(
         .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
 
     let mut output = String::new();
-    let mut n_decoded = tokens.len() as i32;
     let eos = loaded.model.token_eos();
 
-    for _ in 0..req.max_tokens {
+    // n_decoded is the absolute context position: prompt length plus however
+    // many tokens have been emitted so far.
+    for n_decoded in (tokens.len() as i32..).take(req.max_tokens as usize) {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
 
@@ -316,13 +317,11 @@ fn generate_blocking(
         // Prepare next token for decoding
         batch.clear();
         batch
-            .add(token, n_decoded as i32, &[0], true)
+            .add(token, n_decoded, &[0], true)
             .map_err(|e| InferenceError::GenerationError(format!("Batch add failed: {e}")))?;
 
         ctx.decode(&mut batch)
             .map_err(|e| InferenceError::GenerationError(format!("Decode failed: {e}")))?;
-
-        n_decoded += 1;
     }
 
     Ok(output)
@@ -367,11 +366,10 @@ fn stream_blocking(
     ctx.decode(&mut batch)
         .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
 
-    let mut n_decoded = tokens.len() as i32;
     let eos = loaded.model.token_eos();
     let mut accumulated = String::new();
 
-    for _ in 0..req.max_tokens {
+    for n_decoded in (tokens.len() as i32..).take(req.max_tokens as usize) {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
 
@@ -407,13 +405,11 @@ fn stream_blocking(
         // Prepare next token
         batch.clear();
         batch
-            .add(token, n_decoded as i32, &[0], true)
+            .add(token, n_decoded, &[0], true)
             .map_err(|e| InferenceError::GenerationError(format!("Batch add failed: {e}")))?;
 
         ctx.decode(&mut batch)
             .map_err(|e| InferenceError::GenerationError(format!("Decode failed: {e}")))?;
-
-        n_decoded += 1;
     }
 
     Ok(())

@@ -70,7 +70,7 @@ impl StorageManager {
         }
 
         // Sort by size descending
-        models.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        models.sort_by_key(|m| std::cmp::Reverse(m.size_bytes));
 
         // Scan for partial downloads and orphaned files
         if self.models_dir.exists() {

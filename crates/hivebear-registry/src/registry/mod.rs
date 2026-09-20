@@ -182,7 +182,17 @@ impl Registry {
             )
             .await
         {
-            tracing::debug!("No tokenizer.json available: {e}");
+            // debug! meant this was invisible at the default `warn` level, so
+            // the install looked clean and the model only failed much later,
+            // at load time. It matters more now: Candle is the only backend
+            // that can serve a pipeline stage, and it refuses to load a GGUF
+            // without a tokenizer.json beside it.
+            tracing::warn!(
+                "Could not fetch tokenizer.json for {model_id} ({e}). Local llama.cpp \
+                 inference will still work, but Candle — and therefore contributing \
+                 this model to a layer-split mesh session — will not. Place the \
+                 HuggingFace tokenizer.json next to the model file to fix it."
+            );
         }
 
         // Build installed info

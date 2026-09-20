@@ -138,7 +138,10 @@ verify_checksum() {
 
     # Extract expected hash for our file from SHA256SUMS.txt
     local expected
-    expected="$(grep "$filename" "$checksums_file" | awk '{print $1}')"
+    # Exact filename match on field 2 -- sha256sum writes "<hash>  <name>" (or
+    # "<hash> *<name>" in binary mode). A substring grep would also match a
+    # sibling line such as "<name>.sig" and return two hashes.
+    expected="$(awk -v f="$filename" '$2 == f || $2 == "*" f { print $1 }' "$checksums_file")"
 
     if [ -z "$expected" ]; then
         echo "Error: No checksum found for $filename in SHA256SUMS.txt. Aborting."

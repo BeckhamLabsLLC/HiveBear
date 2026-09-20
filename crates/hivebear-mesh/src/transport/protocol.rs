@@ -24,20 +24,33 @@ impl TensorDtype {
         }
     }
 
-    /// Encode as a `u8` tag for cross-boundary transfer (e.g. pipeline handler).
+    /// Encode as a `u8` tag for the [`MeshPipelineHandler::forward_layers`] boundary.
+    ///
+    /// This tag space is defined by `MeshPipelineHandler`, NOT by the wire format —
+    /// `TensorDtype` travels between peers as a serde enum. The mapping below must
+    /// stay identical to the one in `hivebear-cli`'s `CliPipelineHandler`:
+    /// `0 = F32, 1 = F16, 2 = BF16`.
+    ///
+    /// These previously read `F16 => 0, F32 => 1`, the inverse of the handler's
+    /// mapping, which silently swapped F16 and F32 on every pipeline hop in both
+    /// directions — a receiving stage would read F32 activations 2 bytes at a time.
+    ///
+    /// [`MeshPipelineHandler::forward_layers`]: crate::protocol::MeshPipelineHandler::forward_layers
     pub fn to_u8(self) -> u8 {
         match self {
-            TensorDtype::F16 => 0,
-            TensorDtype::F32 => 1,
+            TensorDtype::F32 => 0,
+            TensorDtype::F16 => 1,
             TensorDtype::BF16 => 2,
         }
     }
 
-    /// Decode from a `u8` tag. Returns `None` for unknown values.
+    /// Decode a `u8` tag from the pipeline-handler boundary. `None` for unknown values.
+    ///
+    /// Must mirror [`TensorDtype::to_u8`].
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
-            0 => Some(TensorDtype::F16),
-            1 => Some(TensorDtype::F32),
+            0 => Some(TensorDtype::F32),
+            1 => Some(TensorDtype::F16),
             2 => Some(TensorDtype::BF16),
             _ => None,
         }
@@ -103,18 +116,33 @@ pub enum MeshMessage {
         vocab_size: u32,
     },
 
-    /// Request to verify a specific layer's computation.
+    /// Ask a worker to re-run its assigned layers over a specific input so
+    /// the result can be checked.
+    ///
+    /// This used to carry only `input_hash`. A worker cannot compute anything
+    /// from a hash, so the challenge was unanswerable by construction and the
+    /// only thing a responder could do was assert its own innocence — which
+    /// is exactly what the implementation did. The input travels in full.
     VerifyChallenge {
         session_id: Uuid,
-        layer_index: u32,
-        input_hash: [u8; 32],
+        /// Which layers to run. Lets the challenger target one stage.
+        layer_range: Range<u32>,
+        token_position: u32,
+        data: Bytes,
+        shape: Vec<usize>,
+        dtype: TensorDtype,
     },
 
-    /// Response to a verification challenge.
+    /// A worker's answer to [`MeshMessage::VerifyChallenge`].
+    ///
+    /// Deliberately carries no `passed` flag: whether a result is acceptable
+    /// is the challenger's judgement, and asking the subject of an audit to
+    /// grade itself is not verification. It reports the SHA-256 of the bytes
+    /// it actually produced, or why it could not produce them.
     VerifyResponse {
         session_id: Uuid,
         output_hash: [u8; 32],
-        passed: bool,
+        error: Option<String>,
     },
 
     /// Session teardown: release model and resources.
@@ -242,6 +270,48 @@ pub enum MeshMessage {
     },
 }
 
+impl MeshMessage {
+    /// Session this message belongs to, when it has one.
+    ///
+    /// Used to route inbound messages to the task that owns the session
+    /// rather than dumping everything into one shared queue, where
+    /// concurrent consumers steal each other's messages.
+    ///
+    /// Swarm-scoped messages deliberately return `None`: a swarm id is not a
+    /// session id, and swarm management is handled by the node, not by a
+    /// per-session task.
+    pub fn session_id(&self) -> Option<Uuid> {
+        match self {
+            MeshMessage::AssignLayers { session_id, .. }
+            | MeshMessage::AssignLayersAck { session_id, .. }
+            | MeshMessage::ActivationTensor { session_id, .. }
+            | MeshMessage::Logits { session_id, .. }
+            | MeshMessage::VerifyChallenge { session_id, .. }
+            | MeshMessage::VerifyResponse { session_id, .. }
+            | MeshMessage::ReleaseSession { session_id }
+            | MeshMessage::InferenceRequest { session_id, .. }
+            | MeshMessage::InferenceToken { session_id, .. }
+            | MeshMessage::InferenceComplete { session_id, .. }
+            | MeshMessage::PipelineHeartbeat { session_id, .. }
+            | MeshMessage::PeerLeaving { session_id, .. }
+            | MeshMessage::CompressedActivationTensor { session_id, .. }
+            | MeshMessage::DraftTokens { session_id, .. }
+            | MeshMessage::VerifyDraft { session_id, .. } => Some(*session_id),
+
+            MeshMessage::Error { session_id, .. } => *session_id,
+
+            MeshMessage::Hello { .. }
+            | MeshMessage::HelloAck { .. }
+            | MeshMessage::Ping { .. }
+            | MeshMessage::Pong { .. }
+            | MeshMessage::SwarmInvite { .. }
+            | MeshMessage::SwarmInviteAck { .. }
+            | MeshMessage::SwarmHeartbeat { .. }
+            | MeshMessage::SwarmRebalance { .. } => None,
+        }
+    }
+}
+
 /// Current protocol version.
 pub const PROTOCOL_VERSION: u32 = 2;
 
@@ -272,6 +342,40 @@ pub fn decode(data: &[u8]) -> crate::error::Result<MeshMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the pipeline-handler tag space: `0 = F32, 1 = F16, 2 = BF16`.
+    ///
+    /// These exact values are duplicated in `hivebear-cli`'s `CliPipelineHandler`,
+    /// which cannot import this enum. They were transposed for F16/F32 once already,
+    /// silently corrupting every multi-stage pipeline forward pass, so assert the
+    /// literals rather than only the round-trip.
+    #[test]
+    fn tensor_dtype_u8_tags_match_pipeline_handler() {
+        assert_eq!(TensorDtype::F32.to_u8(), 0);
+        assert_eq!(TensorDtype::F16.to_u8(), 1);
+        assert_eq!(TensorDtype::BF16.to_u8(), 2);
+
+        assert_eq!(TensorDtype::from_u8(0), Some(TensorDtype::F32));
+        assert_eq!(TensorDtype::from_u8(1), Some(TensorDtype::F16));
+        assert_eq!(TensorDtype::from_u8(2), Some(TensorDtype::BF16));
+        assert_eq!(TensorDtype::from_u8(3), None);
+    }
+
+    #[test]
+    fn tensor_dtype_u8_roundtrips() {
+        for dt in [TensorDtype::F32, TensorDtype::F16, TensorDtype::BF16] {
+            assert_eq!(TensorDtype::from_u8(dt.to_u8()), Some(dt));
+        }
+    }
+
+    /// A mislabelled dtype makes the receiver read the wrong element width, so the
+    /// tag and the byte size must stay consistent.
+    #[test]
+    fn tensor_dtype_byte_sizes() {
+        assert_eq!(TensorDtype::F32.byte_size(), 4);
+        assert_eq!(TensorDtype::F16.byte_size(), 2);
+        assert_eq!(TensorDtype::BF16.byte_size(), 2);
+    }
 
     #[test]
     fn test_ping_pong_roundtrip() {

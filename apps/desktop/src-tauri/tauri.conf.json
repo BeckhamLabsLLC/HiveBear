@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "HiveBear",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "com.hivebear.app",
   "build": {
     "devUrl": "http://localhost:5173",
@@ -27,7 +27,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ4RThEN0EwNUNGOEI0RTkKUldUcHRQaGNvTmZvU0V5QUhuYzhmTFloM1pNUWQ2Z3I3T2h1SmxvUG4yVWlsR0JVVzVtNWtad1EK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc3RjJEOUQ2NzU0QzgxNDIKUldSQ2dVeDExdG55ZDUwRTRwTFRDb0ZmRkVCVUpvb2NydjVuMm05U2hCQ0hXVHlPUGhBL3gwUlMK",
       "endpoints": [
         "https://github.com/BeckhamLabsLLC/HiveBear/releases/latest/download/latest.json"
       ]
@@ -36,6 +36,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "macOS": {
       "minimumSystemVersion": "10.15"
     },

@@ -98,6 +98,82 @@ impl MeshPipelineHandler for CliPipelineHandler {
         Ok(())
     }
 
+    async fn tokenize(&self, messages_json: &str) -> Result<Vec<u32>, String> {
+        let state = self.state.lock().await;
+        let state = state
+            .as_ref()
+            .ok_or("No layers loaded — call load_layers first")?;
+
+        let messages: Vec<hivebear_inference::types::ChatMessage> =
+            serde_json::from_str(messages_json)
+                .map_err(|e| format!("Could not parse conversation: {e}"))?;
+
+        // The backend applies the model's chat template, so hand it a request
+        // rather than a flattened string.
+        let req = hivebear_inference::types::GenerateRequest {
+            messages,
+            ..Default::default()
+        };
+
+        self.orchestrator
+            .registry()
+            .get(state.handle.engine)
+            .ok_or("Backend not found for loaded model")?
+            .tokenize(&state.handle, &req)
+            .await
+            .map_err(|e| format!("Tokenization failed: {e}"))
+    }
+
+    async fn embed_prompt(&self, token_ids: &[u32]) -> Result<(Vec<u8>, Vec<usize>, u8), String> {
+        let state = self.state.lock().await;
+        let state = state
+            .as_ref()
+            .ok_or("No layers loaded — call load_layers first")?;
+
+        let activation = self
+            .orchestrator
+            .registry()
+            .get(state.handle.engine)
+            .ok_or("Backend not found for loaded model")?
+            .embed_tokens(&state.handle, token_ids)
+            .await
+            .map_err(|e| format!("Embedding failed: {e}"))?;
+
+        Ok((
+            activation.data,
+            activation.shape,
+            activation_dtype_tag(activation.dtype),
+        ))
+    }
+
+    async fn sample_token(
+        &self,
+        logits: Vec<u8>,
+        shape: Vec<usize>,
+        dtype: u8,
+        temperature: f32,
+        top_p: f32,
+    ) -> Result<(u32, String), String> {
+        let state = self.state.lock().await;
+        let state = state
+            .as_ref()
+            .ok_or("No layers loaded — call load_layers first")?;
+
+        let logits = hivebear_inference::types::ActivationData {
+            data: logits,
+            shape,
+            dtype: activation_dtype_from_tag(dtype),
+        };
+
+        self.orchestrator
+            .registry()
+            .get(state.handle.engine)
+            .ok_or("Backend not found for loaded model")?
+            .sample_from_logits(&state.handle, &logits, temperature, top_p)
+            .await
+            .map_err(|e| format!("Sampling failed: {e}"))
+    }
+
     async fn forward_layers(
         &self,
         activation_data: Vec<u8>,
@@ -169,5 +245,23 @@ impl MeshPipelineHandler for CliPipelineHandler {
             warn!("unload_layers called but no layers were loaded");
         }
         Ok(())
+    }
+}
+
+/// Map an engine dtype to the wire tag documented on `MeshPipelineHandler`.
+fn activation_dtype_tag(dtype: hivebear_inference::types::ActivationDtype) -> u8 {
+    match dtype {
+        hivebear_inference::types::ActivationDtype::F32 => 0,
+        hivebear_inference::types::ActivationDtype::F16 => 1,
+        hivebear_inference::types::ActivationDtype::BF16 => 2,
+    }
+}
+
+/// Inverse of [`activation_dtype_tag`].
+fn activation_dtype_from_tag(tag: u8) -> hivebear_inference::types::ActivationDtype {
+    match tag {
+        1 => hivebear_inference::types::ActivationDtype::F16,
+        2 => hivebear_inference::types::ActivationDtype::BF16,
+        _ => hivebear_inference::types::ActivationDtype::F32,
     }
 }

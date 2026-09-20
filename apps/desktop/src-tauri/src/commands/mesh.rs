@@ -58,8 +58,14 @@ pub fn save_mesh_config(state: State<'_, AppState>, mesh_config: MeshConfig) -> 
 /// Live connection status (vs MeshStatus which is just config).
 #[derive(Serialize)]
 pub struct MeshConnectionStatus {
-    /// Whether the mesh node process is running.
+    /// Whether the mesh node is listening locally.
+    ///
+    /// This is NOT the same as being on the hive — see `registered`. The UI
+    /// used to render "Connected to Hive" off this flag alone, which stayed
+    /// true while the coordination server was unreachable.
     pub running: bool,
+    /// Whether the coordination server has acknowledged this node.
+    pub registered: bool,
     /// Number of directly connected peers.
     pub peer_count: usize,
     /// The node's hex-encoded public key (if running).
@@ -86,11 +92,13 @@ pub fn get_mesh_connection_status(state: State<'_, AppState>) -> CmdResult<MeshC
     match node.as_ref() {
         Some(n) => Ok(MeshConnectionStatus {
             running: n.is_running(),
+            registered: n.is_registered(),
             peer_count: n.peer_count(),
             node_id: Some(n.local_id.to_hex()),
         }),
         None => Ok(MeshConnectionStatus {
             running: false,
+            registered: false,
             peer_count: 0,
             node_id: None,
         }),

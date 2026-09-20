@@ -238,6 +238,10 @@ impl InferenceBackend for CandleBackend {
         Ok(())
     }
 
+    fn supports_pipeline(&self) -> bool {
+        true
+    }
+
     async fn forward_partial(
         &self,
         handle: &ModelHandle,
@@ -313,6 +317,22 @@ impl InferenceBackend for CandleBackend {
                 .map_err(|e| ie(format!("Embed: {e}")))?;
 
             tensor_to_activation(&embedded)
+        })
+        .await
+        .map_err(|e| ie(format!("Task join error: {e}")))?
+    }
+
+    async fn tokenize(&self, handle: &ModelHandle, req: &GenerateRequest) -> Result<Vec<u32>> {
+        let pm = self.get_pipeline_model(handle.id)?;
+        let prompt = build_prompt(req);
+
+        tokio::task::spawn_blocking(move || {
+            let pm = pm.lock().unwrap_or_else(|e| e.into_inner());
+            let encoding = pm
+                .tokenizer
+                .encode(prompt.as_str(), true)
+                .map_err(|e| ie(format!("Tokenization failed: {e}")))?;
+            Ok(encoding.get_ids().to_vec())
         })
         .await
         .map_err(|e| ie(format!("Task join error: {e}")))?

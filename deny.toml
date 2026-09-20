@@ -5,29 +5,56 @@
 version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Reviewed 2026-03-31. Transitive deps we can't control (gtk-rs GTK3 from Tauri, bincode, fxhash).
-# Next review: 2026-06-30.
+# Reviewed 2026-08-11. Every entry below is an *unmaintained-crate* notice with no
+# upgrade path, except the two quick-xml vulnerabilities noted at the end.
+#
+# All genuinely exploitable advisories found in this review were FIXED by upgrading,
+# not ignored: RUSTSEC-2026-0185 (remote memory exhaustion in quinn-proto — our QUIC
+# mesh transport), 2026-0098/0099/0104 (rustls-webpki), 2026-0204 (crossbeam-epoch)
+# and 2026-0097 (rand unsoundness).
+#
+# The previous review's justifications were checked against the advisory DB and
+# several were wrong (2024-0370 was labelled "bincode", it is proc-macro-error;
+# 2024-0436 was labelled "fxhash", it is paste). Labels below are verified.
+#
+# Next review: 2026-11-11. Re-verify each ID against the DB — do not just move the date.
 ignore = [
-    "RUSTSEC-2024-0370",  # bincode: crafted input DoS. Not reachable via our API surface.
-    "RUSTSEC-2024-0411",  # gtk-rs: unmaintained GTK3 binding (Tauri transitive dep).
-    "RUSTSEC-2024-0412",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0413",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0414",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0415",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0416",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0417",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0418",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0419",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0420",  # gtk-rs: unmaintained (Tauri transitive dep).
-    "RUSTSEC-2024-0436",  # fxhash: unmaintained. Transitive dep, no direct usage.
-    "RUSTSEC-2025-0057",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0075",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0080",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0081",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0098",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0100",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0119",  # Transitive dep. No patch available.
-    "RUSTSEC-2025-0141",  # Transitive dep. No patch available.
+    # ── Tauri v2 Linux/macOS build chain: unmaintained, compile-time only ──
+    "RUSTSEC-2024-0370",  # proc-macro-error: unmaintained proc-macro helper.
+    "RUSTSEC-2024-0411",  # gtk-rs GTK3 bindings: unmaintained (Tauri Linux webview).
+    "RUSTSEC-2024-0412",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0413",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0414",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0415",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0416",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0417",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0418",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0419",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0420",  # gtk-rs GTK3 bindings: unmaintained.
+    "RUSTSEC-2024-0436",  # paste: unmaintained macro helper, reached via wgpu/metal.
+
+    # ── Unmaintained leaf utilities, no known defect ──
+    "RUSTSEC-2025-0057",  # fxhash: unmaintained hasher. No direct usage.
+    "RUSTSEC-2025-0075",  # unic-char-range: unmaintained Unicode table crate.
+    "RUSTSEC-2025-0080",  # unic-common: unmaintained.
+    "RUSTSEC-2025-0081",  # unic-char-property: unmaintained.
+    "RUSTSEC-2025-0098",  # unic-ucd-version: unmaintained.
+    "RUSTSEC-2025-0100",  # unic-ucd-ident: unmaintained.
+    "RUSTSEC-2025-0119",  # number_prefix: unmaintained byte-size formatter (indicatif).
+
+    # ── bincode: unmaintained, and we use it directly for the mesh wire format ──
+    # Not a known vulnerability, but this is the one entry here with real blast
+    # radius if a defect is ever found. Track a migration off it.
+    "RUSTSEC-2025-0141",  # bincode: unmaintained.
+
+    # ── quick-xml DoS: real vulnerabilities, blocked by upstream semver pins ──
+    # Fixed in 0.41.0, but self_update 0.42 pins ^0.37 and plist 1.8 (via Tauri)
+    # pins ^0.38, so neither can take the fix without an upstream release.
+    # Exposure is limited: quick-xml only parses GitHub release metadata over TLS
+    # (self_update) and our own bundled Info.plist (plist) — no attacker-supplied
+    # XML reaches either path. Recheck when self_update/Tauri bump their pins.
+    "RUSTSEC-2026-0194",  # quick-xml: quadratic runtime on duplicate attribute names.
+    "RUSTSEC-2026-0195",  # quick-xml: unbounded namespace allocation in NsReader.
 ]
 
 [licenses]

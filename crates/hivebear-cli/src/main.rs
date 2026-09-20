@@ -4,6 +4,25 @@ mod api;
 mod pipeline_handler;
 mod registry_commands;
 
+/// Build an HTTP client for talking to the coordination server.
+///
+/// `reqwest::Client::new()` applies **no** request timeout, so an unresponsive or
+/// black-holed coordinator would hang a CLI command forever with no output — the
+/// worst failure mode for a command-line tool. Every outbound call goes through
+/// here so that cannot happen.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        // Fall back to the default client rather than aborting the command: a
+        // missing timeout is still better than refusing to run.
+        .unwrap_or_else(|e| {
+            tracing::warn!("Falling back to default HTTP client: {e}");
+            reqwest::Client::new()
+        })
+}
+
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use futures::StreamExt;
@@ -220,9 +239,9 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
 
-        /// Coordinator server URL
-        #[arg(long, default_value = "http://localhost:7879")]
-        coordinator: String,
+        /// Coordinator server URL (defaults to the configured mesh coordinator)
+        #[arg(long)]
+        coordinator: Option<String>,
     },
 
     /// Profile hardware, recommend a model, install it, and start chatting — all in one command
@@ -383,12 +402,17 @@ fn maybe_start_mesh(
         .unwrap_or_else(|_| hivebear_mesh::NodeIdentity::generate());
 
     let security_mode = hivebear_mesh::MeshSecurityMode::default();
-    let transport: Arc<dyn hivebear_mesh::MeshTransport> =
-        Arc::new(hivebear_mesh::transport::quic::QuicTransport::new(
+    let transport: Arc<dyn hivebear_mesh::MeshTransport> = Arc::new(
+        hivebear_mesh::transport::quic::QuicTransport::new(
             identity.node_id.clone(),
             security_mode,
-            None,
-        ));
+            Some(paths.data_dir.join("tofu_pins.json")),
+        )
+        // STUN must run on the socket we will listen on, so the transport
+        // does it during listen() rather than the node doing it beforehand
+        // on a throwaway socket.
+        .with_stun_servers(config.mesh.stun_servers.clone()),
+    );
     let discovery: Arc<dyn hivebear_mesh::discovery::PeerDiscovery> = Arc::new(
         hivebear_mesh::discovery::server::CoordinationServerClient::new(
             config.mesh.coordination_server.clone(),
@@ -396,13 +420,22 @@ fn maybe_start_mesh(
     );
 
     let reputation_path = Some(paths.data_dir.join("reputation.json"));
-    let node = Arc::new(hivebear_mesh::MeshNode::with_identity(
-        identity,
-        transport,
-        discovery,
-        tier,
-        reputation_path,
-    ));
+    let node = Arc::new(
+        hivebear_mesh::MeshNode::with_identity(
+            identity,
+            transport,
+            discovery,
+            tier,
+            reputation_path,
+        )
+        // These were hardcoded inside MeshNode, so the configured values
+        // were parsed, shown in Settings, and ignored.
+        .with_nat_servers(
+            config.mesh.stun_servers.clone(),
+            config.mesh.relay_servers.clone(),
+        )
+        .with_min_reputation(config.mesh.min_reputation),
+    );
 
     let listen_addr: std::net::SocketAddr =
         format!("0.0.0.0:{}", config.mesh.port).parse().unwrap();
@@ -437,11 +470,30 @@ fn maybe_start_mesh(
 static MESH_NODE: std::sync::OnceLock<std::sync::Arc<hivebear_mesh::MeshNode>> =
     std::sync::OnceLock::new();
 
+/// Coordinator URL explicitly requested on the command line, if any.
+fn command_coordinator_override(command: &Commands) -> Option<String> {
+    match command {
+        Commands::Share { coordinator, .. } => coordinator.clone(),
+        Commands::Contribute { coordinator, .. } => coordinator.clone(),
+        #[cfg(feature = "api")]
+        Commands::Serve { coordinator, .. } => coordinator.clone(),
+        _ => None,
+    }
+}
+
 /// Create an Orchestrator with mesh backend auto-registered if a mesh node is active.
 fn create_orchestrator(hw: HardwareProfile) -> Orchestrator {
-    let mut orchestrator = Orchestrator::new(hw);
+    let mut orchestrator = Orchestrator::new(hw.clone());
     if let Some(node) = MESH_NODE.get() {
-        let mesh_backend = hivebear_mesh::MeshBackend::new(std::sync::Arc::clone(node));
+        // Give the mesh backend a local stage handler so it can split a
+        // model rather than only replicate it. The handler wraps a *separate*
+        // local-only Orchestrator on purpose: the one being built here will
+        // own the MeshBackend, and handing that same orchestrator back to the
+        // backend would be circular.
+        let local = std::sync::Arc::new(Orchestrator::new(hw));
+        let handler = std::sync::Arc::new(pipeline_handler::CliPipelineHandler::new(local));
+        let mesh_backend = hivebear_mesh::MeshBackend::new(std::sync::Arc::clone(node))
+            .with_pipeline_handler(handler);
         orchestrator.register_backend(Box::new(mesh_backend));
     }
     orchestrator
@@ -461,14 +513,18 @@ async fn main() {
         .with_target(false)
         .init();
 
-    // Auto-start mesh for commands that benefit from it
+    // Auto-start a background mesh node for commands that merely *benefit*
+    // from one.
+    //
+    // `Mesh` and `Contribute` are deliberately excluded: they manage a node
+    // explicitly and bind a port themselves. Auto-starting here bound
+    // config.mesh.port (7878) first, so `hivebear mesh start` and
+    // `hivebear contribute` — whose own defaults are also 7878 — then failed
+    // with "Address already in use" against a node this process had just
+    // started behind the user's back.
     let needs_mesh = matches!(
         cli.command,
-        Commands::Run { .. }
-            | Commands::Mesh { .. }
-            | Commands::Contribute { .. }
-            | Commands::Quickstart { .. }
-            | Commands::Share { .. }
+        Commands::Run { .. } | Commands::Quickstart { .. } | Commands::Share { .. }
     ) || {
         #[cfg(feature = "api")]
         {
@@ -480,7 +536,15 @@ async fn main() {
         }
     };
 
-    let config = hivebear_core::Config::load();
+    let mut config = hivebear_core::Config::load();
+
+    // Honour --coordinator before the background node is built. `serve` in
+    // particular accepted the flag and then discarded it, so the override
+    // silently did nothing.
+    if let Some(url) = command_coordinator_override(&cli.command) {
+        config.mesh.coordination_server = url;
+    }
+
     if needs_mesh {
         let hw = hivebear_core::profile();
         if let Some(node) = maybe_start_mesh(&config, &hw) {
@@ -571,6 +635,8 @@ async fn main() {
             port,
             model: models,
             no_mesh: _,
+            // Applied to `config.mesh.coordination_server` above, before the
+            // background mesh node is constructed.
             coordinator: _,
             bind,
             no_auth,
@@ -685,7 +751,7 @@ async fn fetch_community_data(
         config.mesh.coordination_server, fp.gpu_class, fp.ram_gb_bucket, fp.platform_arch
     );
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
             #[derive(serde::Deserialize)]
@@ -735,7 +801,7 @@ async fn share_benchmark_result(
     };
 
     let url = format!("{}/benchmarks", config.mesh.coordination_server);
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let mut req = client.post(&url).json(&submission);
     if let Some(ref token) = config.account.jwt_token {
@@ -1969,6 +2035,21 @@ async fn cmd_mesh(action: MeshAction) {
                         )
                         .green()
                     );
+
+                    // Listening locally and being reachable by other peers are
+                    // different things. Saying "started" for both is how users
+                    // ended up believing they had joined a hive they could not
+                    // reach.
+                    if node.is_registered() {
+                        println!("{}", "Registered with the coordination server.".green());
+                    } else {
+                        println!(
+                            "{}",
+                            "Not registered with the coordination server — other peers \
+                             cannot discover this node yet. Retrying in the background."
+                                .yellow()
+                        );
+                    }
                     println!(
                         "{}",
                         format!(
@@ -2185,15 +2266,30 @@ async fn cmd_mesh_run(
         let identity = hivebear_mesh::NodeIdentity::load_or_generate(&identity_path)
             .unwrap_or_else(|_| hivebear_mesh::NodeIdentity::generate());
         let security_mode = hivebear_mesh::MeshSecurityMode::default();
+        let tofu_pins = Some(paths.data_dir.join("tofu_pins.json"));
         let transport: Arc<dyn hivebear_mesh::transport::MeshTransport> =
             Arc::new(hivebear_mesh::transport::quic::QuicTransport::new(
                 identity.node_id.clone(),
                 security_mode,
-                None,
+                tofu_pins,
             ));
 
+        // QuicTransport::connect requires an endpoint, and only listen()
+        // creates one — without this, connect() returned "Not listening"
+        // 100% of the time, so `hivebear mesh run` always fell back to local
+        // inference, which is the exact opposite of what the command is for.
+        // Bind an ephemeral port: we are dialling out, so the number does not
+        // matter and must not collide with a node that may already own 7878.
+        let client_addr: std::net::SocketAddr = "0.0.0.0:0".parse().expect("valid bind address");
+        let connect_result = match transport.listen(client_addr).await {
+            Ok(()) => transport.connect(peer_addr).await,
+            Err(e) => Err(hivebear_mesh::MeshError::Transport(format!(
+                "could not open a local mesh endpoint: {e}"
+            ))),
+        };
+
         // Connect to the peer
-        match transport.connect(peer_addr).await {
+        match connect_result {
             Ok(peer_id) => {
                 println!(
                     "{} Connected to peer {} at {}",
@@ -2498,7 +2594,18 @@ async fn cmd_mesh_run(
 // Contribute command: one-click swarm join + contribution dashboard
 // ---------------------------------------------------------------------------
 
-async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator_url: String) {
+async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator: Option<String>) {
+    // Fall back to the configured coordinator rather than localhost. The flag
+    // used to default to http://localhost:7879 while every other code path
+    // used config.mesh.coordination_server (https://mesh.hivebear.com), so a
+    // fresh user running `hivebear contribute` tried to register against their
+    // own machine and silently never joined the mesh.
+    let coordinator_url = coordinator.unwrap_or_else(|| {
+        hivebear_core::Config::load()
+            .mesh
+            .coordination_server
+            .clone()
+    });
     use hivebear_core::contribution::{determine_tier, plan_contribution};
 
     println!("\n{}", "  HiveBear Contributor  ".bold().white().on_green());

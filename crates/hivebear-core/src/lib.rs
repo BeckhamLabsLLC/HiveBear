@@ -2,6 +2,8 @@ pub mod benchmark;
 pub mod config;
 pub mod contribution;
 pub mod fingerprint;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gguf;
 pub mod profiler;
 pub mod recommender;
 #[cfg(all(not(target_arch = "wasm32"), feature = "keychain"))]
