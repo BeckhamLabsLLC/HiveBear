@@ -7,9 +7,17 @@ use crate::peer::PeerInfo;
 
 /// Relay client for peers behind symmetric NATs.
 ///
-/// When both direct connections and hole-punching fail (typically for
-/// symmetric NATs, ~15% of home networks), the relay server acts as a
-/// UDP proxy between the two peers.
+/// **Not currently used, and not a TURN client.** It POSTs JSON to port
+/// 3478 — the TURN port — and performs none of TURN's allocation,
+/// permission or channel-bind exchange, so no standard relay would answer
+/// it. No HiveBear relay is deployed either: relay.hivebear.com does not
+/// resolve.
+///
+/// `MeshNode::connect_with_nat_traversal` no longer calls this, because
+/// attempting it cost ~15s per unreachable peer for an outcome that could
+/// not succeed. Making symmetric-NAT peers reachable needs a real TURN
+/// client here and a TURN server deployed; this module is kept as the place
+/// that work belongs.
 pub struct RelayClient {
     relay_servers: Vec<String>,
 }

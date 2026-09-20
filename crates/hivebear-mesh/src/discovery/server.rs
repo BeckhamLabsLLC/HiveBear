@@ -17,6 +17,13 @@ pub struct CoordinationServerClient {
     base_url: String,
     http: reqwest::Client,
     node_info: tokio::sync::Mutex<Option<PeerInfo>>,
+    /// Bearer token issued by POST /register.
+    ///
+    /// The response body was previously discarded, so no request ever carried
+    /// an Authorization header. /signal validates one and returns 401 without
+    /// it — and send_signal treats a non-success status as non-fatal, so NAT
+    /// signalling failed completely silently.
+    auth_token: tokio::sync::Mutex<Option<String>>,
 }
 
 impl CoordinationServerClient {
@@ -35,6 +42,20 @@ impl CoordinationServerClient {
                 .build()
                 .unwrap_or_default(),
             node_info: tokio::sync::Mutex::new(None),
+            auth_token: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Token issued at registration, if we have one.
+    pub async fn auth_token(&self) -> Option<String> {
+        self.auth_token.lock().await.clone()
+    }
+
+    /// Attach the registration bearer token, when we have one.
+    async fn authed(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.auth_token.lock().await.as_ref() {
+            Some(token) => req.bearer_auth(token),
+            None => req,
         }
     }
 }
@@ -50,7 +71,19 @@ impl PeerDiscovery for CoordinationServerClient {
 
         match self.http.post(&url).json(info).send().await {
             Ok(resp) if resp.status().is_success() => {
-                debug!("Registered successfully with coordination server");
+                // Keep the bearer token; /signal and the other authenticated
+                // endpoints are unusable without it.
+                match resp.json::<serde_json::Value>().await {
+                    Ok(body) => {
+                        if let Some(token) = body.get("token").and_then(|t| t.as_str()) {
+                            *self.auth_token.lock().await = Some(token.to_string());
+                            debug!("Registered; received coordination token");
+                        } else {
+                            warn!("Register response carried no token; signalling will fail");
+                        }
+                    }
+                    Err(e) => warn!("Could not parse register response: {e}"),
+                }
                 Ok(())
             }
             Ok(resp) => {
@@ -120,7 +153,8 @@ impl PeerDiscovery for CoordinationServerClient {
         };
 
         let url = format!("{}/heartbeat", self.base_url);
-        match self.http.post(&url).json(info).send().await {
+        let req = self.authed(self.http.post(&url)).await.json(info);
+        match req.send().await {
             Ok(resp) if resp.status().is_success() => Ok(()),
             Ok(resp) => {
                 let status = resp.status();
@@ -135,20 +169,55 @@ impl PeerDiscovery for CoordinationServerClient {
         }
     }
 
+    async fn send_signal(
+        &self,
+        to_node: &str,
+        action: &str,
+        from_addr: Option<&str>,
+    ) -> Result<()> {
+        let from = match self.node_info.lock().await.as_ref() {
+            Some(i) => i.node_id.to_hex(),
+            None => return Err(MeshError::Discovery("Not registered".into())),
+        };
+        CoordinationServerClient::send_signal(self, &from, to_node, action, from_addr).await
+    }
+
+    async fn poll_signals(&self) -> Result<Vec<serde_json::Value>> {
+        let node_id = match self.node_info.lock().await.as_ref() {
+            Some(i) => i.node_id.to_hex(),
+            None => return Ok(Vec::new()),
+        };
+        CoordinationServerClient::poll_signals(self, &node_id).await
+    }
+
     async fn deregister(&self) -> Result<()> {
         let info = self.node_info.lock().await;
         if info.is_none() {
             return Ok(());
         }
 
+        // The server takes {"node_id": ...} plus a bearer token. This sent
+        // neither, so it could not identify the caller and every deregister
+        // was rejected — departing peers lingered in the registry until they
+        // timed out, and other nodes kept trying to dial them.
+        let node_id = info.as_ref().map(|i| i.node_id.to_hex());
         let url = format!("{}/deregister", self.base_url);
-        match self.http.delete(&url).send().await {
-            Ok(_) => {
-                debug!("Deregistered from coordination server");
-            }
-            Err(e) => {
-                // Non-fatal — node will eventually time out
-                debug!("Deregister failed (non-fatal): {e}");
+        if let Some(node_id) = node_id {
+            let req = self
+                .authed(self.http.delete(&url))
+                .await
+                .json(&serde_json::json!({ "node_id": node_id }));
+            match req.send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    debug!("Deregistered from coordination server");
+                }
+                Ok(resp) => {
+                    warn!("Deregister returned {}", resp.status());
+                }
+                Err(e) => {
+                    // Non-fatal — the node will eventually time out.
+                    debug!("Deregister failed (non-fatal): {e}");
+                }
             }
         }
 
@@ -295,27 +364,36 @@ impl CoordinationServerClient {
     ///
     /// Used for NAT traversal coordination: exchanging external addresses,
     /// coordinating simultaneous QUIC handshakes for hole-punching, etc.
+    /// The body must match the coordinator's `Signal` type exactly:
+    /// `{from_node, to_node, from_addr, action}`. It previously sent
+    /// `signal_type` and `payload`, which that struct does not declare — so
+    /// serde dropped both on the way in and every relayed signal arrived
+    /// empty. Nothing surfaced, because a non-2xx response here is treated
+    /// as non-fatal.
     pub async fn send_signal(
         &self,
         from_node: &str,
         to_node: &str,
-        signal_type: &str,
-        payload: &serde_json::Value,
+        action: &str,
+        from_addr: Option<&str>,
     ) -> Result<()> {
         let url = format!("{}/signal", self.base_url);
         let body = serde_json::json!({
             "from_node": from_node,
             "to_node": to_node,
-            "signal_type": signal_type,
-            "payload": payload,
+            "from_addr": from_addr,
+            "action": action,
         });
 
-        match self.http.post(&url).json(&body).send().await {
+        let req = self.authed(self.http.post(&url)).await.json(&body);
+        match req.send().await {
             Ok(resp) if resp.status().is_success() => Ok(()),
             Ok(resp) => {
                 let status = resp.status();
-                debug!("Signal send returned {status}");
-                Ok(()) // Non-fatal — hole punch may still work
+                // Louder than debug!: a 401 here means NAT traversal is dead,
+                // and it used to disappear without trace.
+                warn!("Signal to {to_node} rejected with {status}");
+                Ok(()) // Non-fatal — a direct connection may still work
             }
             Err(e) if e.is_connect() || e.is_timeout() => {
                 debug!("Signal relay unreachable (non-fatal): {e}");
@@ -332,7 +410,8 @@ impl CoordinationServerClient {
     pub async fn poll_signals(&self, node_id: &str) -> Result<Vec<serde_json::Value>> {
         let url = format!("{}/signals?node_id={}", self.base_url, node_id);
 
-        match self.http.get(&url).send().await {
+        let req = self.authed(self.http.get(&url)).await;
+        match req.send().await {
             Ok(resp) if resp.status().is_success() => {
                 let signals: Vec<serde_json::Value> = resp
                     .json()
