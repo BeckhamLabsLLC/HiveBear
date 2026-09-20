@@ -90,10 +90,11 @@ cargo install --git https://github.com/BeckhamLabsLLC/HiveBear hivebear-cli --lo
 # release, which is not what we build or test.
 ```
 
-> **Docker images are not published yet.** The `build-docker` jobs have failed
-> on every release so far, so `ghcr.io/beckhamlabsllc/hivebear` does not exist.
-> The Dockerfiles in this repo do build locally; the published-image
-> instructions will return once a release pushes one successfully.
+> **Docker images are not published yet.** The `build-docker` jobs failed on
+> every release up to 0.1.6, because the build images lacked the libclang that
+> llama-cpp-sys-2's bindgen step needs. That is fixed, but a package pushed to
+> ghcr for the first time is private, so `ghcr.io/beckhamlabsllc/hivebear` is
+> not pullable until it is made public. These instructions will return then.
 
 ## What Your Hardware Can Run
 
