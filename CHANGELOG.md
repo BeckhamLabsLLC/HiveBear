@@ -5,6 +5,18 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Docker images build again.** They had failed on every release the
+  project ever cut. `llama-cpp-sys-2` generates its bindings with bindgen,
+  which needs libclang at build time; the GitHub runners ship clang, so the
+  ordinary CI builds stayed green, while the slim Rust and CUDA base images
+  do not, so only the Docker builds failed. The images will publish from the
+  next tagged release. They still need to be made publicly readable on ghcr
+  before `docker pull` works for anyone.
+
 ## [0.1.6] - 2026-09-20
 
 The mesh did not work before this release. Several independent defects each
