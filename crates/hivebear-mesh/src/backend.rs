@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::node::MeshNode;
 use crate::pipeline::initiator::PipelineInitiator;
+use crate::protocol::MeshPipelineHandler;
 use crate::scheduler::swarm_scheduler::SwarmAwareScheduler;
 use crate::scheduler::LayerScheduler;
 use crate::swarm::router::SwarmRouter;
@@ -27,7 +28,67 @@ pub struct MeshBackend {
     /// Pipelines set up by `load_model`, keyed by the model path the handle
     /// carries, so `unload` can release them on the peers. Without this,
     /// every mesh load left a model resident on every peer forever.
-    active: dashmap::DashMap<std::path::PathBuf, Arc<PipelineInitiator>>,
+    active: dashmap::DashMap<std::path::PathBuf, ActiveSession>,
+    /// Local stage handler, when this node can serve one.
+    ///
+    /// Required for layer splitting: the initiator owns layers `0..k`, so it
+    /// holds the token embeddings (which `load_partial` provides only when
+    /// the range starts at 0) and the tokenizer needed to turn a sampled id
+    /// back into text. Without a handler the backend can only replicate.
+    pipeline_handler: Option<Arc<dyn MeshPipelineHandler>>,
+}
+
+/// How many leading layers the initiator keeps for itself.
+///
+/// It must own at least one, because only a stage starting at layer 0 gets
+/// the token embeddings, and it must leave at least one for the peers, or
+/// nothing is actually distributed. Returns `None` when neither is possible.
+fn local_stage_end(total_layers: u32, peer_count: usize) -> Option<u32> {
+    if total_layers < 2 || peer_count == 0 {
+        return None;
+    }
+    let participants = peer_count as u32 + 1;
+    Some(
+        total_layers
+            .div_ceil(participants)
+            .clamp(1, total_layers - 1),
+    )
+}
+
+/// Move peer stages past the local one and make the last stage reach the end.
+///
+/// The scheduler always plans from layer zero, so without the shift every
+/// peer would be told to serve layers the initiator is already serving. And
+/// the final stage has to finish at `total_layers`: the output projection is
+/// only loaded for a range ending there, so otherwise no peer can produce
+/// logits and generation blocks forever.
+fn shift_and_seal(
+    assignments: &mut [crate::scheduler::plan::LayerAssignment],
+    local_end: u32,
+    total_layers: u32,
+) {
+    for assignment in assignments.iter_mut() {
+        assignment.layer_range.start += local_end;
+        assignment.layer_range.end += local_end;
+    }
+    if let Some(last) = assignments.last_mut() {
+        last.layer_range.end = total_layers;
+    }
+}
+
+/// How a loaded model is being served.
+#[derive(Clone)]
+struct ActiveSession {
+    initiator: Arc<PipelineInitiator>,
+    mode: ServingMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ServingMode {
+    /// One peer runs the whole model.
+    Replicated,
+    /// Layers split: this node runs `0..local_end`, peers run the rest.
+    Split,
 }
 
 impl MeshBackend {
@@ -37,7 +98,14 @@ impl MeshBackend {
             scheduler: Arc::new(SwarmAwareScheduler::new()),
             router: Arc::new(SwarmRouter::new()),
             active: dashmap::DashMap::new(),
+            pipeline_handler: None,
         }
+    }
+
+    /// Give this backend a local stage handler, enabling layer splitting.
+    pub fn with_pipeline_handler(mut self, handler: Arc<dyn MeshPipelineHandler>) -> Self {
+        self.pipeline_handler = Some(handler);
+        self
     }
 
     pub fn with_scheduler(node: Arc<MeshNode>, scheduler: Arc<dyn LayerScheduler>) -> Self {
@@ -46,7 +114,81 @@ impl MeshBackend {
             scheduler,
             router: Arc::new(SwarmRouter::new()),
             active: dashmap::DashMap::new(),
+            pipeline_handler: None,
         }
+    }
+
+    /// Set up a layer-split session: this node takes `0..k`, peers take the
+    /// rest.
+    ///
+    /// The initiator has to own a stage starting at layer 0 — that is the
+    /// only way `load_partial` hands it the token embeddings, and `embed()`
+    /// fails on any other stage. It keeps that share small: the point of the
+    /// mesh is to run a model this machine could not hold alone.
+    async fn try_split(
+        &self,
+        path: &Path,
+        handler: Arc<dyn MeshPipelineHandler>,
+        total_layers: u32,
+        peers: &[crate::peer::PeerInfo],
+    ) -> std::result::Result<ActiveSession, String> {
+        if total_layers < 2 {
+            return Err(format!("{total_layers} layers is too few to split"));
+        }
+        if peers.is_empty() {
+            return Err("no peers to take the remaining layers".into());
+        }
+
+        // Share the model across this node plus the peers, then hand the
+        // local node the first slice. Always leave at least one layer for
+        // the peers, or there is nothing distributed about it.
+        let local_end = local_stage_end(total_layers, peers.len())
+            .ok_or_else(|| format!("{total_layers} layers cannot be split across these peers"))?;
+
+        let source = path.display().to_string();
+        handler
+            .load_layers(&source, 0..local_end, total_layers)
+            .await
+            .map_err(|e| format!("local stage 0..{local_end} would not load: {e}"))?;
+
+        // Plan the remainder, then shift the scheduler's ranges up past the
+        // local stage. The scheduler always plans from zero, so without the
+        // shift every peer would be told to serve layers this node is
+        // already serving — and nobody would hold the output head.
+        let remaining = total_layers - local_end;
+        let model_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let mut plan = self
+            .scheduler
+            .plan(&source, remaining, model_size, peers)
+            .await
+            .map_err(|e| format!("scheduling the remaining {remaining} layers failed: {e}"))?;
+
+        if plan.assignments.is_empty() {
+            return Err("scheduler produced no assignments".into());
+        }
+        shift_and_seal(&mut plan.assignments, local_end, total_layers);
+        plan.total_layers = total_layers;
+
+        info!(
+            "Layer split for {}: local 0..{local_end}, {} peer stage(s) covering {local_end}..{total_layers}",
+            path.display(),
+            plan.assignments.len()
+        );
+
+        let initiator = Arc::new(PipelineInitiator::new(
+            self.node.transport.clone(),
+            plan,
+            self.node.local_id.clone(),
+        ));
+        initiator
+            .setup(&source)
+            .await
+            .map_err(|e| format!("peers would not take their stages: {e}"))?;
+
+        Ok(ActiveSession {
+            initiator,
+            mode: ServingMode::Split,
+        })
     }
 
     /// Get a reference to the swarm router for registration/management.
@@ -96,6 +238,35 @@ impl InferenceBackend for MeshBackend {
             return Err(InferenceError::LoadError("No mesh peers available".into()));
         }
 
+        // Prefer a real layer split when we can do one.
+        //
+        // Needs three things: a local stage handler (the initiator must hold
+        // the token embeddings and tokenizer, which `load_partial` only
+        // provides for a range starting at 0), a genuine layer count from
+        // the model's own metadata, and at least one peer to take the rest.
+        let block_count = hivebear_core::gguf::read_block_count(path);
+        if let (Some(handler), Some(total_layers)) = (&self.pipeline_handler, block_count) {
+            match self
+                .try_split(path, handler.clone(), total_layers, &peers)
+                .await
+            {
+                Ok(session) => {
+                    self.active.insert(path.to_path_buf(), session);
+                    return Ok(ModelHandle::new(path.to_path_buf(), InferenceEngine::Mesh));
+                }
+                Err(e) => {
+                    // Falling back is better than failing: replication still
+                    // runs the model, just on one peer.
+                    warn!("Layer split unavailable ({e}); falling back to replication");
+                }
+            }
+        } else if block_count.is_none() {
+            debug!(
+                "No block_count in {}; cannot size a layer split",
+                path.display()
+            );
+        }
+
         // Plan for replication: one peer serves the whole model.
         //
         // This used to fabricate a 32-layer split (`total_layers = 32 //
@@ -141,7 +312,13 @@ impl InferenceBackend for MeshBackend {
             plan,
             self.node.local_id.clone(),
         );
-        self.active.insert(path.to_path_buf(), Arc::new(initiator));
+        self.active.insert(
+            path.to_path_buf(),
+            ActiveSession {
+                initiator: Arc::new(initiator),
+                mode: ServingMode::Replicated,
+            },
+        );
 
         Ok(ModelHandle::new(path.to_path_buf(), InferenceEngine::Mesh))
     }
@@ -187,32 +364,81 @@ impl InferenceBackend for MeshBackend {
         let existing = self
             .active
             .get(&handle.model_path)
-            .map(|e| Arc::clone(e.value()));
+            .map(|e| e.value().clone());
 
-        if let Some(initiator) = existing {
+        if let Some(session) = existing {
+            let initiator = session.initiator;
             info!(
-                "Reusing mesh session {} for {}",
+                "Reusing {:?} mesh session {} for {}",
+                session.mode,
                 initiator.session_id(),
                 handle.model_path.display()
             );
-            let model_id = model_id.clone();
-            let messages_json = messages_json.clone();
-            tokio::spawn(async move {
-                let mut token_rx = initiator.stream_tokens_replicated(
-                    model_id,
-                    messages_json,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                );
-                while let Some(result) = token_rx.recv().await {
-                    let mapped = result
-                        .map_err(|e| InferenceError::GenerationError(format!("Mesh error: {e}")));
-                    if tx.send(mapped).await.is_err() {
-                        break;
-                    }
+
+            match session.mode {
+                ServingMode::Split => {
+                    // Layer-split generation: the initiator embeds locally,
+                    // runs its own stage, and hands the activation down the
+                    // pipeline. Needs the tokenizer and embeddings, which is
+                    // exactly what the local stage holds.
+                    let Some(handler) = self.pipeline_handler.clone() else {
+                        let _ = tx.try_send(Err(InferenceError::GenerationError(
+                            "split session without a local stage handler".into(),
+                        )));
+                        return Box::pin(ReceiverStream::new(rx));
+                    };
+                    let messages_json = messages_json.clone();
+                    tokio::spawn(async move {
+                        let prompt_tokens = match handler.tokenize(&messages_json).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let _ = tx
+                                    .send(Err(InferenceError::GenerationError(format!(
+                                        "Could not tokenize the prompt: {e}"
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                        };
+                        let mut token_rx = initiator.stream_tokens(
+                            prompt_tokens,
+                            max_tokens,
+                            temperature,
+                            top_p,
+                            handler,
+                        );
+                        while let Some(result) = token_rx.recv().await {
+                            let mapped = result.map_err(|e| {
+                                InferenceError::GenerationError(format!("Mesh error: {e}"))
+                            });
+                            if tx.send(mapped).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
                 }
-            });
+                ServingMode::Replicated => {
+                    let model_id = model_id.clone();
+                    let messages_json = messages_json.clone();
+                    tokio::spawn(async move {
+                        let mut token_rx = initiator.stream_tokens_replicated(
+                            model_id,
+                            messages_json,
+                            max_tokens,
+                            temperature,
+                            top_p,
+                        );
+                        while let Some(result) = token_rx.recv().await {
+                            let mapped = result.map_err(|e| {
+                                InferenceError::GenerationError(format!("Mesh error: {e}"))
+                            });
+                            if tx.send(mapped).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
             return Box::pin(ReceiverStream::new(rx));
         }
 
@@ -303,13 +529,22 @@ impl InferenceBackend for MeshBackend {
         // tracked "at a higher level". They were not, so every mesh load
         // leaked a loaded model on every peer for the rest of their uptime.
         match self.active.remove(&handle.model_path) {
-            Some((path, initiator)) => {
+            Some((path, session)) => {
                 info!(
                     "Releasing mesh session {} for {}",
-                    initiator.session_id(),
+                    session.initiator.session_id(),
                     path.display()
                 );
-                initiator.teardown().await;
+                session.initiator.teardown().await;
+                if session.mode == ServingMode::Split {
+                    if let Some(handler) = &self.pipeline_handler {
+                        // Release the local stage too, or this node keeps its
+                        // slice of every model it has ever initiated.
+                        if let Err(e) = handler.unload_layers().await {
+                            debug!("Local stage would not unload: {e}");
+                        }
+                    }
+                }
             }
             None => {
                 debug!(
@@ -319,5 +554,86 @@ impl InferenceBackend for MeshBackend {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::peer::NodeId;
+    use crate::scheduler::plan::LayerAssignment;
+
+    fn assignment(range: std::ops::Range<u32>) -> LayerAssignment {
+        LayerAssignment {
+            peer_id: NodeId::generate().0,
+            layer_range: range,
+            estimated_compute_ms: 1.0,
+            estimated_transfer_ms: 1.0,
+        }
+    }
+
+    #[test]
+    fn the_initiator_keeps_a_stage_but_never_all_of_them() {
+        // One peer: split roughly in half.
+        assert_eq!(local_stage_end(32, 1), Some(16));
+        // Three peers: the initiator takes a quarter.
+        assert_eq!(local_stage_end(32, 3), Some(8));
+        // Never the whole model, however lopsided the arithmetic gets.
+        assert_eq!(local_stage_end(2, 1), Some(1));
+        assert_eq!(local_stage_end(3, 1), Some(2));
+        for peers in 1..8 {
+            for total in 2..200u32 {
+                let end = local_stage_end(total, peers).unwrap();
+                assert!(end >= 1, "the initiator needs layer 0 for the embeddings");
+                assert!(
+                    end < total,
+                    "leaving nothing for peers is not a distributed split"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn splitting_is_refused_when_it_would_be_meaningless() {
+        assert_eq!(local_stage_end(1, 4), None, "a one-layer model");
+        assert_eq!(local_stage_end(0, 4), None);
+        assert_eq!(local_stage_end(32, 0), None, "nobody to split with");
+    }
+
+    /// The regression this guards: the scheduler always plans from layer
+    /// zero, so unshifted assignments tell every peer to serve layers the
+    /// initiator already holds — and nobody ends at the last layer, which is
+    /// the only stage that loads the output projection. Generation would
+    /// then block forever waiting for logits nobody could produce.
+    #[test]
+    fn peer_stages_follow_the_local_one_and_reach_the_last_layer() {
+        let total = 32;
+        let local_end = local_stage_end(total, 2).unwrap(); // 11
+                                                            // What a scheduler planning 21 remaining layers might return.
+        let mut assignments = vec![assignment(0..11), assignment(11..21)];
+
+        shift_and_seal(&mut assignments, local_end, total);
+
+        assert_eq!(assignments[0].layer_range, local_end..(local_end + 11));
+        assert_eq!(
+            assignments.last().unwrap().layer_range.end,
+            total,
+            "the final stage must own the output projection"
+        );
+
+        // Contiguous, gapless cover of local_end..total.
+        let mut cursor = local_end;
+        for a in &assignments {
+            assert_eq!(a.layer_range.start, cursor, "gap or overlap between stages");
+            cursor = a.layer_range.end;
+        }
+        assert_eq!(cursor, total);
+    }
+
+    #[test]
+    fn a_single_peer_stage_is_sealed_to_the_end() {
+        let mut assignments = vec![assignment(0..4)];
+        shift_and_seal(&mut assignments, 8, 32);
+        assert_eq!(assignments[0].layer_range, 8..32);
     }
 }

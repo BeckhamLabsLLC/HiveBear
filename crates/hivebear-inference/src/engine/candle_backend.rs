@@ -322,6 +322,22 @@ impl InferenceBackend for CandleBackend {
         .map_err(|e| ie(format!("Task join error: {e}")))?
     }
 
+    async fn tokenize(&self, handle: &ModelHandle, req: &GenerateRequest) -> Result<Vec<u32>> {
+        let pm = self.get_pipeline_model(handle.id)?;
+        let prompt = build_prompt(req);
+
+        tokio::task::spawn_blocking(move || {
+            let pm = pm.lock().unwrap_or_else(|e| e.into_inner());
+            let encoding = pm
+                .tokenizer
+                .encode(prompt.as_str(), true)
+                .map_err(|e| ie(format!("Tokenization failed: {e}")))?;
+            Ok(encoding.get_ids().to_vec())
+        })
+        .await
+        .map_err(|e| ie(format!("Task join error: {e}")))?
+    }
+
     async fn sample_from_logits(
         &self,
         handle: &ModelHandle,

@@ -121,6 +121,18 @@ pub trait InferenceBackend: Send + Sync {
         ))
     }
 
+    /// Tokenize a request's conversation using this pipeline stage's
+    /// tokenizer.
+    ///
+    /// Pipeline-parallel generation happens in token space: the initiator
+    /// tokenizes, embeds, and later decodes sampled ids back to text, so it
+    /// needs the tokenizer even though it holds only the first few layers.
+    async fn tokenize(&self, _handle: &ModelHandle, _req: &GenerateRequest) -> Result<Vec<u32>> {
+        Err(crate::error::InferenceError::GenerationError(
+            "Pipeline parallelism not supported by this backend".into(),
+        ))
+    }
+
     /// Sample a token from logits returned by the final stage.
     async fn sample_from_logits(
         &self,

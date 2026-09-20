@@ -116,6 +116,15 @@ pub trait MeshPipelineHandler: Send + Sync {
         index_pos: usize,
     ) -> std::result::Result<(Vec<u8>, Vec<usize>, u8), String>;
 
+    /// Tokenize a conversation (serialized `Vec<ChatMessage>` JSON) with this
+    /// stage's tokenizer.
+    ///
+    /// The initiator needs this before it can embed anything, and only the
+    /// node holding a stage has the tokenizer.
+    async fn tokenize(&self, _messages_json: &str) -> std::result::Result<Vec<u32>, String> {
+        Err("this handler cannot tokenize".into())
+    }
+
     /// Run the prompt's token ids through the embedding layer, producing the
     /// activation that enters the pipeline.
     ///

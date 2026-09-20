@@ -291,6 +291,28 @@ impl PipelineInitiator {
                 }
             };
 
+            // Run our own stage before handing off.
+            //
+            // The initiator owns layers 0..k: that is the only way it gets
+            // the token embeddings (load_partial only supplies them for a
+            // range starting at 0) and the tokenizer. Those blocks still
+            // have to be executed, and embed() does not run them — it only
+            // produces the input to the first block.
+            let activation = match pipeline_handler
+                .forward_layers(activation.0, activation.1, activation.2, 0)
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(MeshError::Pipeline(format!(
+                            "Local pipeline stage failed: {e}"
+                        ))))
+                        .await;
+                    return;
+                }
+            };
+
             // Keep the first activation: for a single-stage pipeline the
             // initiator observes both this input and the logits that come
             // back, which is the one place it holds a trustworthy reference
@@ -458,7 +480,16 @@ impl PipelineInitiator {
 
                 // Embed the newly generated token and send the activation back
                 // into the pipeline for the next position.
-                let next_activation = pipeline_handler.embed_prompt(&[token_id]).await;
+                let next_activation = match pipeline_handler.embed_prompt(&[token_id]).await {
+                    // Embedding produces the block input; our own blocks
+                    // still have to run over it before it leaves the node.
+                    Ok(a) => {
+                        pipeline_handler
+                            .forward_layers(a.0, a.1, a.2, (position + 1) as usize)
+                            .await
+                    }
+                    Err(e) => Err(e),
+                };
 
                 let activation = match next_activation {
                     Ok(r) => r,
@@ -896,10 +927,13 @@ mod tests {
             handler.samples.load(Ordering::SeqCst) >= 2,
             "each token must go through sample_token"
         );
-        assert_eq!(
-            handler.forwards.load(Ordering::SeqCst),
-            0,
-            "embedding and sampling must not be smuggled through forward_layers"
+        // forward_layers is now expected: the initiator owns layers 0..k and
+        // must execute them. What must NOT happen is embedding or sampling
+        // being smuggled through it — that is what the embeds/samples counts
+        // above prove, since a smuggled call would leave them at zero.
+        assert!(
+            handler.forwards.load(Ordering::SeqCst) >= 1,
+            "the initiator's own stage should have been executed"
         );
     }
 }

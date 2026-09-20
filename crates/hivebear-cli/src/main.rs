@@ -483,9 +483,17 @@ fn command_coordinator_override(command: &Commands) -> Option<String> {
 
 /// Create an Orchestrator with mesh backend auto-registered if a mesh node is active.
 fn create_orchestrator(hw: HardwareProfile) -> Orchestrator {
-    let mut orchestrator = Orchestrator::new(hw);
+    let mut orchestrator = Orchestrator::new(hw.clone());
     if let Some(node) = MESH_NODE.get() {
-        let mesh_backend = hivebear_mesh::MeshBackend::new(std::sync::Arc::clone(node));
+        // Give the mesh backend a local stage handler so it can split a
+        // model rather than only replicate it. The handler wraps a *separate*
+        // local-only Orchestrator on purpose: the one being built here will
+        // own the MeshBackend, and handing that same orchestrator back to the
+        // backend would be circular.
+        let local = std::sync::Arc::new(Orchestrator::new(hw));
+        let handler = std::sync::Arc::new(pipeline_handler::CliPipelineHandler::new(local));
+        let mesh_backend = hivebear_mesh::MeshBackend::new(std::sync::Arc::clone(node))
+            .with_pipeline_handler(handler);
         orchestrator.register_backend(Box::new(mesh_backend));
     }
     orchestrator

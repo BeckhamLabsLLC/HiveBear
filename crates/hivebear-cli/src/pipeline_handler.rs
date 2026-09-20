@@ -98,6 +98,32 @@ impl MeshPipelineHandler for CliPipelineHandler {
         Ok(())
     }
 
+    async fn tokenize(&self, messages_json: &str) -> Result<Vec<u32>, String> {
+        let state = self.state.lock().await;
+        let state = state
+            .as_ref()
+            .ok_or("No layers loaded — call load_layers first")?;
+
+        let messages: Vec<hivebear_inference::types::ChatMessage> =
+            serde_json::from_str(messages_json)
+                .map_err(|e| format!("Could not parse conversation: {e}"))?;
+
+        // The backend applies the model's chat template, so hand it a request
+        // rather than a flattened string.
+        let req = hivebear_inference::types::GenerateRequest {
+            messages,
+            ..Default::default()
+        };
+
+        self.orchestrator
+            .registry()
+            .get(state.handle.engine)
+            .ok_or("Backend not found for loaded model")?
+            .tokenize(&state.handle, &req)
+            .await
+            .map_err(|e| format!("Tokenization failed: {e}"))
+    }
+
     async fn embed_prompt(&self, token_ids: &[u32]) -> Result<(Vec<u8>, Vec<usize>, u8), String> {
         let state = self.state.lock().await;
         let state = state
