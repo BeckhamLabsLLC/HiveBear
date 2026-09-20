@@ -238,6 +238,10 @@ impl InferenceBackend for CandleBackend {
         Ok(())
     }
 
+    fn supports_pipeline(&self) -> bool {
+        true
+    }
+
     async fn forward_partial(
         &self,
         handle: &ModelHandle,

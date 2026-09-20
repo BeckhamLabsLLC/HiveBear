@@ -118,11 +118,22 @@ impl Orchestrator {
     /// is registered, automatically falls back to distributed mesh inference.
     pub async fn load(&self, path: &Path, config: &LoadConfig) -> Result<ModelHandle> {
         let format = selector::detect_format(path)?;
-        let local_result = selector::select_engine(&self.registry, format, &self.profile);
+        // A pipeline stage must go to a backend that honours it. Picking
+        // llama.cpp here loaded the whole model and only failed later, on the
+        // first forward_partial, after the worker had already reported ready.
+        let needs_pipeline = config.pipeline_stage.is_some();
+        let local_result =
+            selector::select_engine_for(&self.registry, format, &self.profile, needs_pipeline);
 
         let backend = match local_result {
             Ok(b) => b,
             Err(local_err) => {
+                // Never bounce a pipeline stage to the mesh: this node *is*
+                // the mesh worker, so that would just ask someone else to do
+                // the work it was assigned.
+                if needs_pipeline {
+                    return Err(local_err);
+                }
                 // If mesh is available, try it as a fallback
                 if self.has_mesh() {
                     if let Some(mesh) = self
@@ -154,7 +165,8 @@ impl Orchestrator {
             Err(load_err) => {
                 // If a local engine failed to load (e.g., out of memory),
                 // try the mesh backend as fallback
-                if backend.engine_id() != hivebear_core::types::InferenceEngine::Mesh
+                if !needs_pipeline
+                    && backend.engine_id() != hivebear_core::types::InferenceEngine::Mesh
                     && self.has_mesh()
                 {
                     if let Some(mesh) = self

@@ -82,6 +82,18 @@ pub trait InferenceBackend: Send + Sync {
     /// Unload a model, freeing resources.
     async fn unload(&self, handle: &ModelHandle) -> Result<()>;
 
+    /// Whether this backend can run a pipeline stage — i.e. honour
+    /// `LoadConfig::pipeline_stage` and implement `forward_partial`.
+    ///
+    /// Defaults to false. Returning true while ignoring `pipeline_stage` is
+    /// worse than returning false: llama.cpp did exactly that, so a worker
+    /// told to load 8 of 80 layers loaded the entire model, acknowledged
+    /// `ready: true`, and only failed later on the first forward pass —
+    /// defeating the whole point of splitting the model up.
+    fn supports_pipeline(&self) -> bool {
+        false
+    }
+
     /// Run a partial forward pass through assigned layers only.
     /// Returns the intermediate activation tensor for forwarding to the next stage,
     /// or final logits if this is the last stage.
@@ -212,6 +224,15 @@ impl EngineRegistry {
     ///
     /// This allows external crates (like `hivebear-mesh`) to add backends
     /// without creating circular dependencies.
+    /// A registry with no backends, for building an exact set by hand.
+    /// `new()` pulls in every compiled-in backend, which makes tests depend
+    /// on the active feature flags.
+    pub fn empty() -> Self {
+        Self {
+            backends: Vec::new(),
+        }
+    }
+
     pub fn register(&mut self, backend: Box<dyn InferenceBackend>) {
         self.backends.push(backend);
     }
