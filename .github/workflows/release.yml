@@ -310,7 +310,11 @@ jobs:
     permissions:
       contents: write
     needs: [build-cli, verify-cargo-install]
-    if: ${{ !cancelled() && needs.verify-cargo-install.result == 'success' }}
+    # build-cli must succeed too. With only verify-cargo-install gating this,
+    # a release could publish while a platform's tarball was missing — and
+    # install.sh would then 404 for everyone on that platform, with no sign
+    # anything was wrong until a user reported it.
+    if: ${{ needs.build-cli.result == 'success' && needs.verify-cargo-install.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:

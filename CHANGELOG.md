@@ -5,6 +5,68 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-09-20
+
+The mesh did not work before this release. Several independent defects each
+prevented it on their own; they are all fixed, and there are tests covering
+the specific failures.
+
+### Fixed — the mesh
+
+- **`hivebear contribute` failed on every machine.** It asked for model ids
+  with a quantisation suffix (`phi-3-mini-3.8b-q4_k_m`), and three that are
+  not in the catalogue at all. Model resolution is exact, so every tier
+  failed, nobody could become a peer, and the coordinator reported zero
+  peers. This was the root cause of "the mesh is empty".
+- **A node could hold exactly one peer connection.** Every TLS connection
+  used the same server name, and certificate pinning keys on that name, so
+  the second distinct peer was rejected as a possible MITM.
+- **`hivebear mesh run` never reached the mesh.** It dialled a transport that
+  had never called `listen()`, so it failed every time and silently fell back
+  to local inference.
+- **Port 7878 was bound twice.** The background node grabbed it before
+  `mesh start` and `contribute` tried to, so both failed with "address
+  already in use" against a node the same process had just started.
+- **Registration reported success when the coordinator was unreachable**, so
+  the CLI and desktop both said "Connected to Hive" while connected to
+  nothing. Registration state is now tracked separately and retried.
+- **Pipeline-parallel inference could not complete.** Workers sent their
+  output back to the sender instead of forwarding it, and never emitted
+  logits, so the initiator waited forever. Embedding and sampling were also
+  smuggled through the wrong method using out-of-band type tags, so neither
+  actually happened.
+- **Concurrent tasks stole each other's messages** from one shared queue, and
+  discarded what they took. Inbound messages are now routed per session.
+- **NAT discovery measured the wrong socket**, advertising a port nothing was
+  listening on, and hole punching never told the other side to dial.
+
+### Added
+
+- **Layer splitting.** A model too large for one machine now runs across
+  peers, with the initiator serving the first stage. Layer counts come from
+  the model file instead of a hardcoded guess.
+- **TURN relay support** for peers behind symmetric NATs, which hole punching
+  cannot reach. Requires a relay to be deployed; see `deploy/turn`.
+- **Verification that means something.** Workers now recompute a challenged
+  input and report the hash of what they produced. Previously a challenge
+  carried only a hash of the input — unanswerable — so the responder simply
+  asserted it had passed, and peer reputation never moved.
+
+### Fixed — desktop and install
+
+- The **auto-updater never worked**: the app was not built with updater
+  artifacts, so the update manifest was empty and every install was frozen at
+  the version it shipped with. If you are on 0.1.5, this is the last update
+  you will need to install by hand.
+- The app could **die during startup with no window and no error**. A corrupt
+  model registry or chat database now repairs itself instead.
+- `uninstall.sh` **left everything behind on macOS** — it looked in Linux
+  locations, so config and the whole model cache survived.
+- `install.sh` could **reject a valid download** through an over-broad
+  checksum match.
+- The Docker instructions were removed: those images have never been
+  published, because the build has failed on every release.
+
 ## [0.1.5] - 2026-03-30
 
 ### Added
