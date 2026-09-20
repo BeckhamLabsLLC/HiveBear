@@ -25,6 +25,9 @@ const REPLICATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// Covers a cold model load on the slowest peer.
 const SETUP_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// How long to wait for one token's logits to come back round the pipeline.
+const PIPELINE_STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Releases a session subscription when it goes out of scope, including on
 /// the early-return paths.
 struct SessionGuard {
@@ -240,8 +243,11 @@ impl PipelineInitiator {
         self: Arc<Self>,
         prompt_tokens: Vec<u32>,
         max_tokens: u32,
-        _temperature: f32,
-        _top_p: f32,
+        // These were `_temperature` / `_top_p`: the sampling call went
+        // through forward_layers, which has nowhere to put them, so the
+        // caller's sampling settings were silently discarded.
+        temperature: f32,
+        top_p: f32,
         pipeline_handler: Arc<dyn MeshPipelineHandler>,
     ) -> mpsc::Receiver<Result<Token>> {
         let (tx, rx) = mpsc::channel(32);
@@ -261,21 +267,19 @@ impl PipelineInitiator {
             }
         };
 
+        // Claim the session before anything is sent, so logits cannot be
+        // taken off the shared queue by another task.
+        let mut session_rx = self.transport.subscribe_session(session_id);
+
         tokio::spawn(async move {
+            let _guard = SessionGuard::new(self.transport.clone(), session_id);
             // ------------------------------------------------------------------
             // Phase 1: Process prompt tokens
             // ------------------------------------------------------------------
             // Encode the prompt token ids as raw little-endian bytes and pass
             // them through the local pipeline handler (embedding + any layers
             // the initiator owns).
-            let embed_result = pipeline_handler
-                .forward_layers(
-                    prompt_tokens.iter().flat_map(|t| t.to_le_bytes()).collect(),
-                    vec![prompt_tokens.len(), 1], // shape: [seq_len, 1]
-                    0,                            // dtype marker for "prompt tokens"
-                    0,                            // start position
-                )
-                .await;
+            let embed_result = pipeline_handler.embed_prompt(&prompt_tokens).await;
 
             let activation = match embed_result {
                 Ok(a) => a,
@@ -309,48 +313,65 @@ impl PipelineInitiator {
             // ------------------------------------------------------------------
             for position in 0..max_tokens {
                 // Wait for logits from the final pipeline worker.
-                let logits_data = loop {
-                    match self.transport.recv().await {
-                        Ok((
+                let (logits_data, vocab_size) = loop {
+                    let next =
+                        tokio::time::timeout(PIPELINE_STAGE_TIMEOUT, session_rx.recv()).await;
+                    match next {
+                        // A stage that stops responding used to hang this
+                        // loop forever with no output.
+                        Err(_) => {
+                            let _ = tx
+                                .send(Err(MeshError::Pipeline(format!(
+                                    "No logits within {}s; a pipeline stage is unresponsive",
+                                    PIPELINE_STAGE_TIMEOUT.as_secs()
+                                ))))
+                                .await;
+                            self.teardown().await;
+                            return;
+                        }
+                        Ok(None) => {
+                            let _ = tx
+                                .send(Err(MeshError::Transport(
+                                    "Session queue closed mid-generation".into(),
+                                )))
+                                .await;
+                            return;
+                        }
+                        Ok(Some((
                             _,
                             MeshMessage::Logits {
                                 session_id: sid,
                                 data,
+                                vocab_size,
                                 ..
                             },
-                        )) if sid == session_id => {
-                            break data;
+                        ))) if sid == session_id => {
+                            break (data, vocab_size);
                         }
-                        Ok((_, MeshMessage::Error { message, .. })) => {
+                        Ok(Some((_, MeshMessage::Error { message, .. }))) => {
                             let _ = tx.send(Err(MeshError::Pipeline(message))).await;
-                            // Teardown on error.
-                            for a in &self.plan.assignments {
-                                let _ = self
-                                    .transport
-                                    .send(&a.peer_id, MeshMessage::ReleaseSession { session_id })
-                                    .await;
-                            }
+                            self.teardown().await;
                             return;
                         }
-                        Err(e) => {
-                            let _ = tx.send(Err(e)).await;
-                            return;
+                        Ok(Some((from, other))) => {
+                            debug!("Ignoring {other:?} from {from} while awaiting logits");
                         }
-                        _ => continue, // Ignore unrelated messages.
                     }
                 };
 
                 // Sample the next token from the received logits.
                 let sample_result = pipeline_handler
-                    .forward_layers(
+                    .sample_token(
                         logits_data.to_vec(),
-                        vec![1], // shape marker for "sample from logits"
-                        255,     // special dtype marker meaning "sample"
-                        position as usize,
+                        vec![vocab_size as usize],
+                        // Logits come off the final stage as F32.
+                        0,
+                        temperature,
+                        top_p,
                     )
                     .await;
 
-                let (token_bytes, _token_text_shape, _) = match sample_result {
+                let (token_id, token_text) = match sample_result {
                     Ok(r) => r,
                     Err(e) => {
                         let _ = tx
@@ -360,15 +381,7 @@ impl PipelineInitiator {
                     }
                 };
 
-                // Decode the token: first 4 bytes are the token id (u32 LE),
-                // the rest is the UTF-8 text.
-                let token_id = if token_bytes.len() >= 4 {
-                    u32::from_le_bytes(token_bytes[..4].try_into().unwrap_or([0; 4]))
-                } else {
-                    0
-                };
-                let token_text = String::from_utf8_lossy(&token_bytes[4..]).to_string();
-                let is_eos = token_text.is_empty() || token_id == 0;
+                let is_eos = token_text.is_empty();
 
                 let token = Token {
                     text: token_text,
@@ -386,14 +399,7 @@ impl PipelineInitiator {
 
                 // Embed the newly generated token and send the activation back
                 // into the pipeline for the next position.
-                let next_activation = pipeline_handler
-                    .forward_layers(
-                        token_id.to_le_bytes().to_vec(),
-                        vec![1, 1], // shape: [1, 1]
-                        0,          // dtype marker for single token
-                        (position + 1) as usize,
-                    )
-                    .await;
+                let next_activation = pipeline_handler.embed_prompt(&[token_id]).await;
 
                 let activation = match next_activation {
                     Ok(r) => r,
@@ -610,5 +616,231 @@ impl PipelineInitiator {
         });
 
         rx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::daemon::MeshWorkerDaemon;
+    use crate::protocol::{MeshInferenceHandler, MeshPipelineHandler};
+    use crate::scheduler::plan::{InferencePlan, LayerAssignment};
+    use crate::transport::mock::{MockRegistry, MockTransport};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// Records which trait methods the initiator actually reaches for.
+    ///
+    /// The old code funnelled embedding and sampling through
+    /// `forward_layers` with out-of-band dtype markers (0 and 255), which
+    /// `CliPipelineHandler` mapped to F32 like everything else — so it never
+    /// embedded or sampled, and the initiator decoded whatever came back as
+    /// `[token_id_le_bytes][utf8_text]`. This handler fails the test if
+    /// anything routes through forward_layers again.
+    struct RecordingHandler {
+        embeds: AtomicUsize,
+        samples: AtomicUsize,
+        forwards: AtomicUsize,
+    }
+
+    impl RecordingHandler {
+        fn new() -> Self {
+            Self {
+                embeds: AtomicUsize::new(0),
+                samples: AtomicUsize::new(0),
+                forwards: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MeshPipelineHandler for RecordingHandler {
+        async fn load_layers(
+            &self,
+            _model_source: &str,
+            _layer_range: std::ops::Range<u32>,
+            _total_layers: u32,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+
+        async fn embed_prompt(
+            &self,
+            token_ids: &[u32],
+        ) -> std::result::Result<(Vec<u8>, Vec<usize>, u8), String> {
+            self.embeds.fetch_add(1, Ordering::SeqCst);
+            // One f32 per token, F32 tag.
+            let data: Vec<u8> = token_ids
+                .iter()
+                .flat_map(|t| (*t as f32).to_le_bytes())
+                .collect();
+            Ok((data, vec![token_ids.len(), 1], 0))
+        }
+
+        async fn sample_token(
+            &self,
+            _logits: Vec<u8>,
+            _shape: Vec<usize>,
+            _dtype: u8,
+            _temperature: f32,
+            _top_p: f32,
+        ) -> std::result::Result<(u32, String), String> {
+            let n = self.samples.fetch_add(1, Ordering::SeqCst);
+            // Emit two real tokens, then an empty one to signal EOS.
+            if n < 2 {
+                Ok((100 + n as u32, format!("tok{n}")))
+            } else {
+                Ok((0, String::new()))
+            }
+        }
+
+        async fn forward_layers(
+            &self,
+            data: Vec<u8>,
+            shape: Vec<usize>,
+            dtype: u8,
+            _index_pos: usize,
+        ) -> std::result::Result<(Vec<u8>, Vec<usize>, u8), String> {
+            self.forwards.fetch_add(1, Ordering::SeqCst);
+            Ok((data, shape, dtype))
+        }
+
+        async fn unload_layers(&self) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Worker side: echoes the activation, so the single stage is also the
+    /// final stage and returns it as logits.
+    struct EchoPipeline;
+
+    #[async_trait::async_trait]
+    impl MeshPipelineHandler for EchoPipeline {
+        async fn load_layers(
+            &self,
+            _m: &str,
+            _r: std::ops::Range<u32>,
+            _t: u32,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        async fn forward_layers(
+            &self,
+            data: Vec<u8>,
+            shape: Vec<usize>,
+            dtype: u8,
+            _i: usize,
+        ) -> std::result::Result<(Vec<u8>, Vec<usize>, u8), String> {
+            Ok((data, shape, dtype))
+        }
+        async fn unload_layers(&self) -> std::result::Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct NoInference;
+
+    #[async_trait::async_trait]
+    impl MeshInferenceHandler for NoInference {
+        async fn handle_inference(
+            &self,
+            _m: &str,
+            _j: &str,
+            _mt: u32,
+            _t: f32,
+        ) -> std::result::Result<
+            std::pin::Pin<
+                Box<dyn futures::Stream<Item = std::result::Result<String, String>> + Send>,
+            >,
+            String,
+        > {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    /// End to end over a one-stage pipeline: embed the prompt, ship the
+    /// activation to a worker, get logits back, sample, repeat. Before the
+    /// routing and protocol fixes this could not complete at all — the worker
+    /// echoed activations instead of emitting Logits, and the initiator
+    /// blocked forever waiting for them.
+    #[tokio::test]
+    async fn pipeline_generates_tokens_end_to_end() {
+        let registry = MockRegistry::new();
+        let initiator_t = Arc::new(MockTransport::new(NodeId::generate().0, registry.clone()));
+        let worker_t = Arc::new(MockTransport::new(NodeId::generate().0, registry.clone()));
+        initiator_t.connect_for_test(&worker_t);
+        worker_t.connect_for_test(&initiator_t);
+
+        let daemon = Arc::new(MeshWorkerDaemon::with_pipeline(
+            Arc::new(NoInference),
+            worker_t.clone(),
+            Arc::new(EchoPipeline),
+        ));
+        let d = daemon.clone();
+        tokio::spawn(async move { d.run().await });
+
+        let plan = InferencePlan {
+            session_id: Uuid::new_v4(),
+            model_id: "test-model".into(),
+            total_layers: 4,
+            assignments: vec![LayerAssignment {
+                peer_id: worker_t.local_id().clone(),
+                layer_range: 0..4,
+                estimated_compute_ms: 1.0,
+                estimated_transfer_ms: 1.0,
+            }],
+            estimated_latency_ms: 1.0,
+            estimated_throughput_tok_s: 1.0,
+        };
+
+        let initiator = Arc::new(PipelineInitiator::new(
+            initiator_t.clone(),
+            plan,
+            initiator_t.local_id().clone(),
+        ));
+
+        // The worker must know where to send its output.
+        initiator.setup("test-model").await.expect("setup");
+
+        let handler = Arc::new(RecordingHandler::new());
+        let mut rx = Arc::clone(&initiator).stream_tokens(
+            vec![1, 2, 3],
+            8,
+            0.7,
+            0.9,
+            handler.clone() as Arc<dyn MeshPipelineHandler>,
+        );
+
+        let mut texts = Vec::new();
+        while let Ok(Some(item)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            match item {
+                Ok(tok) => {
+                    if tok.text.is_empty() {
+                        break;
+                    }
+                    texts.push(tok.text);
+                }
+                Err(e) => panic!("pipeline returned an error: {e}"),
+            }
+        }
+
+        assert_eq!(
+            texts,
+            vec!["tok0".to_string(), "tok1".to_string()],
+            "the generation loop should complete and yield the sampled tokens"
+        );
+        assert!(
+            handler.embeds.load(Ordering::SeqCst) >= 1,
+            "the prompt must go through embed_prompt"
+        );
+        assert!(
+            handler.samples.load(Ordering::SeqCst) >= 2,
+            "each token must go through sample_token"
+        );
+        assert_eq!(
+            handler.forwards.load(Ordering::SeqCst),
+            0,
+            "embedding and sampling must not be smuggled through forward_layers"
+        );
     }
 }

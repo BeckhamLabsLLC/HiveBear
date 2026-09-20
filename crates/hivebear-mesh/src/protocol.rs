@@ -116,6 +116,42 @@ pub trait MeshPipelineHandler: Send + Sync {
         index_pos: usize,
     ) -> std::result::Result<(Vec<u8>, Vec<usize>, u8), String>;
 
+    /// Run the prompt's token ids through the embedding layer, producing the
+    /// activation that enters the pipeline.
+    ///
+    /// Only the initiator calls this. It exists as its own method because the
+    /// alternative — which is what the code used to do — was to call
+    /// `forward_layers` with `dtype = 0` and hope the implementor understood
+    /// that to mean "these are token ids, not an F32 activation". Tag 0 is
+    /// F32 in the documented dtype space, so nothing distinguished the two,
+    /// and `CliPipelineHandler` duly treated prompt tokens as F32
+    /// activations and ran a forward pass over them.
+    async fn embed_prompt(
+        &self,
+        _token_ids: &[u32],
+    ) -> std::result::Result<(Vec<u8>, Vec<usize>, u8), String> {
+        Err("this handler cannot embed prompts".into())
+    }
+
+    /// Sample the next token from the final stage's logits.
+    ///
+    /// Returns `(token_id, token_text)`. Also its own method for the reason
+    /// above: the old call passed `dtype = 255` as a private signal meaning
+    /// "sample", which is outside the dtype space entirely and which
+    /// `CliPipelineHandler` mapped to F32 along with everything else — so it
+    /// never sampled at all, and the initiator read the returned tensor's
+    /// first four bytes as a token id and the rest as UTF-8.
+    async fn sample_token(
+        &self,
+        _logits: Vec<u8>,
+        _shape: Vec<usize>,
+        _dtype: u8,
+        _temperature: f32,
+        _top_p: f32,
+    ) -> std::result::Result<(u32, String), String> {
+        Err("this handler cannot sample".into())
+    }
+
     /// Unload layers and free resources.
     async fn unload_layers(&self) -> std::result::Result<(), String>;
 }
