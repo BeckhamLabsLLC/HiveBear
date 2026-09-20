@@ -545,7 +545,32 @@ impl MeshNode {
             }
         }
 
-        // Strategy 4 (relay) is deliberately not attempted.
+        // Strategy 4: relay.
+        //
+        // Only a node behind a symmetric NAT needs an allocation; everyone
+        // else just dials the relayed address it advertises, which
+        // strategies 1 and 2 already do. What this node must do is authorise
+        // the peer, or its relay drops their return traffic.
+        let target = peer.external_addr.unwrap_or(peer.addr);
+        match self.transport.relay_to(target).await {
+            Ok(()) => {
+                if let Ok(id) =
+                    tokio::time::timeout(Duration::from_secs(5), self.transport.connect(target))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(crate::error::MeshError::Transport(
+                                "relay connect timed out".into(),
+                            ))
+                        })
+                {
+                    info!("Connected to {} via the relay", peer.node_id);
+                    return Ok(id);
+                }
+            }
+            Err(e) => debug!("Relay unavailable for {}: {e}", peer.node_id),
+        }
+
+        // Note on the old strategy 4.
         //
         // nat::relay is not a TURN client: it POSTs JSON to port 3478 — the
         // TURN port — and performs no allocation, permission or channel-bind

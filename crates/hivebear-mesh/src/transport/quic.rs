@@ -33,6 +33,52 @@ pub struct QuicTransport {
     stun_servers: Vec<String>,
     /// Mapping STUN reported for the listening socket, once known.
     external_addr: Mutex<Option<SocketAddr>>,
+    /// TURN relay to fall back to, for peers behind symmetric NATs.
+    relay: Option<RelayConfig>,
+    /// The relay-carrying socket, once listening, so channels can be bound
+    /// for peers that turn out to be unreachable any other way.
+    turn_socket: Mutex<Option<Arc<crate::nat::turn_socket::TurnSocket>>>,
+}
+
+/// Keep a TURN allocation alive for as long as the node is listening.
+///
+/// Allocations expire on their own — the default lifetime is ten minutes —
+/// and when one lapses every relayed connection through it dies. Refresh at
+/// a third of the lifetime so a couple of lost datagrams do not lose it.
+fn spawn_allocation_refresh(
+    turn: Arc<crate::nat::turn_socket::TurnSocket>,
+    relay: RelayConfig,
+    lifetime_secs: u32,
+) {
+    let period = std::time::Duration::from_secs(u64::from(lifetime_secs.max(90)) / 3);
+    tokio::spawn(async move {
+        let mut client = crate::nat::turn::TurnClient::new(relay.server, relay.credentials);
+        // Re-authenticate so this client learns the realm and nonce; the
+        // allocation itself already exists and Allocate is idempotent for an
+        // existing five-tuple.
+        if let Err(e) = client.allocate(turn.as_ref()).await {
+            warn!("TURN refresh task could not authenticate: {e}");
+            return;
+        }
+        loop {
+            tokio::time::sleep(period).await;
+            match client.refresh(turn.as_ref(), lifetime_secs).await {
+                Ok(()) => debug!("TURN allocation refreshed"),
+                Err(e) => {
+                    warn!("TURN allocation refresh failed: {e}");
+                    // Keep trying: a transient failure should not end
+                    // relaying for the rest of the session.
+                }
+            }
+        }
+    });
+}
+
+/// Where to relay from, and with what credentials.
+#[derive(Clone, Debug)]
+pub struct RelayConfig {
+    pub server: SocketAddr,
+    pub credentials: crate::nat::turn::TurnCredentials,
 }
 
 impl QuicTransport {
@@ -54,7 +100,44 @@ impl QuicTransport {
             tofu_pins_path,
             stun_servers: Vec::new(),
             external_addr: Mutex::new(None),
+            relay: None,
+            turn_socket: Mutex::new(None),
         }
+    }
+
+    /// Fall back to a TURN relay when a peer cannot be reached directly.
+    ///
+    /// Only needed for symmetric NATs, where the mapping differs per
+    /// destination and hole punching cannot work at all.
+    pub fn with_relay(mut self, relay: RelayConfig) -> Self {
+        self.relay = Some(relay);
+        self
+    }
+
+    /// Route traffic for `peer` through the relay.
+    ///
+    /// Binds a TURN channel so subsequent datagrams to that address are
+    /// relayed. Returns an error when no relay is configured or the server
+    /// refuses the binding.
+    pub async fn relay_to(&self, peer: SocketAddr) -> Result<()> {
+        let turn = self
+            .turn_socket
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| MeshError::Relay("no TURN allocation on this transport".into()))?;
+        let relay = self
+            .relay
+            .clone()
+            .ok_or_else(|| MeshError::Relay("no relay configured".into()))?;
+
+        let channel = turn.assign_channel(peer);
+        let mut client = crate::nat::turn::TurnClient::new(relay.server, relay.credentials);
+        // Re-learn realm and nonce on this client instance.
+        client.allocate(turn.as_ref()).await?;
+        client.bind_channel(turn.as_ref(), channel, peer).await?;
+        info!("Relaying traffic to {peer} over channel {channel:#x}");
+        Ok(())
     }
 
     /// Probe these STUN servers when listening, using the listening socket.
@@ -300,7 +383,7 @@ impl MeshTransport for QuicTransport {
             .set_nonblocking(true)
             .map_err(|e| MeshError::Transport(format!("set_nonblocking: {e}")))?;
 
-        let std_socket = if self.stun_servers.is_empty() {
+        let mut std_socket = if self.stun_servers.is_empty() {
             std_socket
         } else {
             let probe = tokio::net::UdpSocket::from_std(std_socket)
@@ -324,12 +407,57 @@ impl MeshTransport for QuicTransport {
                 .map_err(|e| MeshError::Transport(format!("release socket: {e}")))?
         };
 
+        // If a relay is configured, allocate now — while the socket is still
+        // ours. The allocation has to exist before quinn takes over, because
+        // the relayed address is what the endpoint must advertise.
+        let mut allocation = None;
+        if let Some(relay) = self.relay.clone() {
+            let probe = tokio::net::UdpSocket::from_std(std_socket)
+                .map_err(|e| MeshError::Transport(format!("adopt socket for TURN: {e}")))?;
+            {
+                let io = (probe, relay.server);
+                let mut client =
+                    crate::nat::turn::TurnClient::new(relay.server, relay.credentials.clone());
+                match client.allocate(&io).await {
+                    Ok(a) => {
+                        info!("TURN allocation at {} via {}", a.relayed_addr, relay.server);
+                        allocation = Some(a);
+                    }
+                    // Not fatal: direct connections and hole punching still
+                    // work, and most peers never need a relay.
+                    Err(e) => warn!("TURN allocation failed ({e}); continuing without a relay"),
+                }
+                std_socket =
+                    io.0.into_std()
+                        .map_err(|e| MeshError::Transport(format!("release socket: {e}")))?;
+            }
+        }
+
         let runtime = quinn::default_runtime()
             .ok_or_else(|| MeshError::Transport("no async runtime for QUIC".into()))?;
-        let mut endpoint = Endpoint::new(
+
+        let base: Arc<dyn quinn::AsyncUdpSocket> = runtime
+            .wrap_udp_socket(std_socket)
+            .map_err(|e| MeshError::Transport(format!("wrap socket: {e}")))?;
+
+        let socket: Arc<dyn quinn::AsyncUdpSocket> = match (&self.relay, allocation) {
+            (Some(relay), Some(a)) => {
+                let turn = Arc::new(crate::nat::turn_socket::TurnSocket::new(
+                    base,
+                    relay.server,
+                    a.relayed_addr,
+                ));
+                *self.turn_socket.lock().await = Some(Arc::clone(&turn));
+                spawn_allocation_refresh(Arc::clone(&turn), relay.clone(), a.lifetime_secs);
+                turn
+            }
+            _ => base,
+        };
+
+        let mut endpoint = Endpoint::new_with_abstract_socket(
             quinn::EndpointConfig::default(),
             Some(server_config),
-            std_socket,
+            socket,
             runtime,
         )
         .map_err(|e| MeshError::Transport(format!("endpoint: {e}")))?;
@@ -463,6 +591,10 @@ impl MeshTransport for QuicTransport {
 
     async fn discovered_external_addr(&self) -> Option<SocketAddr> {
         self.external_addr().await
+    }
+
+    async fn relay_to(&self, peer: SocketAddr) -> Result<()> {
+        QuicTransport::relay_to(self, peer).await
     }
 }
 

@@ -34,6 +34,15 @@ pub struct TurnSocket {
     peer_to_channel: DashMap<SocketAddr, u16>,
     channel_to_peer: DashMap<u16, SocketAddr>,
     next_channel: std::sync::atomic::AtomicU16,
+    /// STUN replies from the TURN server, lifted out of quinn's receive path.
+    ///
+    /// The allocation has to be refreshed for the life of the session, but by
+    /// then quinn owns the socket. Without this the refresh reply would be
+    /// handed to quinn as an unintelligible datagram and the TURN client
+    /// would time out — so the allocation would expire and take every
+    /// relayed connection with it.
+    server_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    server_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
 }
 
 impl TurnSocket {
@@ -42,6 +51,7 @@ impl TurnSocket {
         server: SocketAddr,
         relayed_addr: SocketAddr,
     ) -> Self {
+        let (server_tx, server_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             inner,
             server,
@@ -49,6 +59,8 @@ impl TurnSocket {
             peer_to_channel: DashMap::new(),
             channel_to_peer: DashMap::new(),
             next_channel: std::sync::atomic::AtomicU16::new(CHANNEL_MIN),
+            server_tx,
+            server_rx: tokio::sync::Mutex::new(server_rx),
         }
     }
 
@@ -85,6 +97,31 @@ impl TurnSocket {
     /// The address to advertise to other peers.
     pub fn relayed_addr(&self) -> SocketAddr {
         self.relayed_addr
+    }
+}
+
+/// Lets the TURN client keep talking to the server after quinn owns the
+/// socket, so the allocation can be refreshed and channels bound on demand.
+#[async_trait::async_trait]
+impl super::turn::TurnIo for TurnSocket {
+    async fn send_to_server(&self, bytes: &[u8]) -> crate::error::Result<()> {
+        // No channel is bound for the server itself, so this goes out
+        // unwrapped, which is what a control message needs.
+        self.try_send(&Transmit {
+            destination: self.server,
+            ecn: None,
+            contents: bytes,
+            segment_size: None,
+            src_ip: None,
+        })
+        .map_err(|e| crate::error::MeshError::Relay(format!("TURN control send failed: {e}")))
+    }
+
+    async fn recv_from_server(&self) -> crate::error::Result<Vec<u8>> {
+        let mut rx = self.server_rx.lock().await;
+        rx.recv()
+            .await
+            .ok_or_else(|| crate::error::MeshError::Relay("TURN control channel closed".into()))
     }
 }
 
@@ -136,8 +173,11 @@ impl AsyncUdpSocket for TurnSocket {
             }
             let len = meta[i].len;
             let Some((channel, payload)) = decode_channel_data(&bufs[i][..len]) else {
-                // A STUN message from the server (a Refresh reply, say).
-                // Leave it alone; the TURN client reads those separately.
+                // A STUN message from the server — a Refresh or ChannelBind
+                // reply. Hand it to the TURN client and hide it from quinn,
+                // which would otherwise see a malformed QUIC packet.
+                let _ = self.server_tx.send(bufs[i][..len].to_vec());
+                meta[i].len = 0;
                 continue;
             };
             let Some(peer) = self.channel_to_peer.get(&channel).map(|p| *p) else {
@@ -344,6 +384,65 @@ mod tests {
         ));
         assert_eq!(meta[0].addr, direct());
         assert_eq!(&bufs[0][..meta[0].len], b"plain datagram");
+    }
+
+    /// The regression this guards: once quinn owns the socket, a Refresh
+    /// reply arrives here. If it were passed through, quinn would see a
+    /// malformed QUIC packet, the TURN client would time out waiting, and
+    /// the allocation would quietly expire — taking every relayed
+    /// connection with it.
+    #[tokio::test]
+    async fn server_control_messages_reach_the_turn_client_not_quinn() {
+        use super::super::turn::{MessageBuilder, TurnIo};
+
+        let inner = Arc::new(FakeSocket::default());
+        let sock = TurnSocket::new(inner.clone(), server(), relayed());
+
+        // A STUN message from the server, as a Refresh reply would be.
+        let reply = MessageBuilder::new(0x0004, 0x0100).build(None);
+        inner
+            .inbound
+            .lock()
+            .unwrap()
+            .push((server(), reply.clone()));
+
+        let mut storage = [0u8; 256];
+        let mut bufs = [io::IoSliceMut::new(&mut storage)];
+        let mut meta = [RecvMeta::default()];
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            sock.poll_recv(&mut cx, &mut bufs, &mut meta),
+            Poll::Ready(Ok(1))
+        ));
+        assert_eq!(
+            meta[0].len, 0,
+            "quinn must not be handed a STUN message as if it were QUIC"
+        );
+
+        let received = sock.recv_from_server().await.expect("control message");
+        assert_eq!(received, reply, "the TURN client should get it instead");
+    }
+
+    #[tokio::test]
+    async fn control_messages_are_sent_to_the_server_unwrapped() {
+        use super::super::turn::TurnIo;
+
+        let inner = Arc::new(FakeSocket::default());
+        let sock = TurnSocket::new(inner.clone(), server(), relayed());
+        // Even with a peer bound, a control message is not ChannelData.
+        sock.assign_channel(peer());
+
+        sock.send_to_server(b"a control message").await.unwrap();
+
+        let sent = inner.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, server());
+        assert_eq!(
+            sent[0].1, b"a control message",
+            "control traffic must not be channel-wrapped"
+        );
     }
 
     #[test]

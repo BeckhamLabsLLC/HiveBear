@@ -385,6 +385,47 @@ pub fn decode_channel_data(buf: &[u8]) -> Option<(u16, &[u8])> {
     Some((channel, &buf[4..4 + len]))
 }
 
+/// Carries TURN control messages to and from the server.
+///
+/// Exists because the allocation has to be refreshed for the whole life of
+/// the session, and by then quinn owns the UDP socket. Before the endpoint
+/// is built the client speaks over a plain socket; afterwards it speaks over
+/// [`super::turn_socket::TurnSocket`], which intercepts the server's STUN
+/// replies out of quinn's receive path. An allocation that silently expires
+/// takes every relayed connection with it.
+#[async_trait::async_trait]
+pub trait TurnIo: Send + Sync {
+    /// Send one control message to the TURN server.
+    async fn send_to_server(&self, bytes: &[u8]) -> Result<()>;
+    /// Next control message from the TURN server.
+    async fn recv_from_server(&self) -> Result<Vec<u8>>;
+}
+
+#[async_trait::async_trait]
+impl TurnIo for (tokio::net::UdpSocket, SocketAddr) {
+    async fn send_to_server(&self, bytes: &[u8]) -> Result<()> {
+        self.0
+            .send_to(bytes, self.1)
+            .await
+            .map(|_| ())
+            .map_err(|e| MeshError::Relay(format!("TURN send failed: {e}")))
+    }
+
+    async fn recv_from_server(&self) -> Result<Vec<u8>> {
+        let mut buf = [0u8; 2048];
+        loop {
+            let (n, from) = self
+                .0
+                .recv_from(&mut buf)
+                .await
+                .map_err(|e| MeshError::Relay(format!("TURN recv failed: {e}")))?;
+            if from == self.1 {
+                return Ok(buf[..n].to_vec());
+            }
+        }
+    }
+}
+
 /// Performs the TURN control exchanges over a caller-supplied socket.
 pub struct TurnClient {
     server: SocketAddr,
@@ -412,10 +453,10 @@ impl TurnClient {
     /// TURN always rejects the first Allocate with 401 and supplies the realm
     /// and nonce, so this sends unauthenticated, learns them, and retries
     /// signed. Anything else is a protocol error.
-    pub async fn allocate(&mut self, socket: &tokio::net::UdpSocket) -> Result<Allocation> {
+    pub async fn allocate(&mut self, io: &dyn TurnIo) -> Result<Allocation> {
         let unsigned = MessageBuilder::new(METHOD_ALLOCATE, CLASS_REQUEST)
             .attr(ATTR_REQUESTED_TRANSPORT, vec![TRANSPORT_UDP, 0, 0, 0]);
-        let first = self.exchange(socket, &unsigned, None).await?;
+        let first = self.exchange(io, &unsigned, None).await?;
 
         let response = match first.class {
             CLASS_SUCCESS => first,
@@ -430,7 +471,7 @@ impl TurnClient {
                     .attr(ATTR_USERNAME, self.creds.username.clone().into_bytes())
                     .attr(ATTR_REALM, realm.clone().into_bytes())
                     .attr(ATTR_NONCE, self.nonce.clone().unwrap_or_default());
-                self.exchange(socket, &signed, Some(&realm)).await?
+                self.exchange(io, &signed, Some(&realm)).await?
             }
             CLASS_ERROR => {
                 return Err(MeshError::Relay(format!(
@@ -470,7 +511,7 @@ impl TurnClient {
 
     /// Extend the allocation. Without this it expires and every relayed
     /// connection drops.
-    pub async fn refresh(&mut self, socket: &tokio::net::UdpSocket, lifetime: u32) -> Result<()> {
+    pub async fn refresh(&mut self, io: &dyn TurnIo, lifetime: u32) -> Result<()> {
         let realm = self
             .realm
             .clone()
@@ -480,7 +521,7 @@ impl TurnClient {
             .attr(ATTR_USERNAME, self.creds.username.clone().into_bytes())
             .attr(ATTR_REALM, realm.clone().into_bytes())
             .attr(ATTR_NONCE, self.nonce.clone().unwrap_or_default());
-        let resp = self.exchange(socket, &msg, Some(&realm)).await?;
+        let resp = self.exchange(io, &msg, Some(&realm)).await?;
         if resp.class == CLASS_SUCCESS {
             Ok(())
         } else {
@@ -495,7 +536,7 @@ impl TurnClient {
     /// header instead of a full Send indication per packet.
     pub async fn bind_channel(
         &mut self,
-        socket: &tokio::net::UdpSocket,
+        io: &dyn TurnIo,
         channel: u16,
         peer: SocketAddr,
     ) -> Result<()> {
@@ -522,7 +563,7 @@ impl TurnClient {
             .attr(ATTR_REALM, realm.clone().into_bytes())
             .attr(ATTR_NONCE, self.nonce.clone().unwrap_or_default());
 
-        let resp = self.exchange(socket, &msg, Some(&realm)).await?;
+        let resp = self.exchange(io, &msg, Some(&realm)).await?;
         if resp.class == CLASS_SUCCESS {
             debug!("Bound channel {channel:#x} to {peer}");
             Ok(())
@@ -537,7 +578,7 @@ impl TurnClient {
     /// Send one request and wait for the matching response.
     async fn exchange(
         &self,
-        socket: &tokio::net::UdpSocket,
+        io: &dyn TurnIo,
         builder: &MessageBuilder,
         realm: Option<&str>,
     ) -> Result<Message> {
@@ -545,29 +586,21 @@ impl TurnClient {
         let bytes = builder.build(creds);
         let txn = builder.txn_id();
 
-        socket
-            .send_to(&bytes, self.server)
-            .await
-            .map_err(|e| MeshError::Relay(format!("TURN send failed: {e}")))?;
+        io.send_to_server(&bytes).await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        let mut buf = [0u8; 2048];
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err(MeshError::Relay("TURN request timed out".into()));
             }
-            let (n, from) = tokio::time::timeout(remaining, socket.recv_from(&mut buf))
+            let datagram = tokio::time::timeout(remaining, io.recv_from_server())
                 .await
-                .map_err(|_| MeshError::Relay("TURN request timed out".into()))?
-                .map_err(|e| MeshError::Relay(format!("TURN recv failed: {e}")))?;
+                .map_err(|_| MeshError::Relay("TURN request timed out".into()))??;
 
-            if from != self.server {
-                continue;
-            }
-            // The socket may also be carrying relayed traffic; only a STUN
-            // reply with our transaction id answers this request.
-            match decode(&buf[..n]) {
+            // The socket also carries relayed traffic; only a STUN reply
+            // bearing our transaction id answers this request.
+            match decode(&datagram) {
                 Some(msg) if msg.txn_id == txn => return Ok(msg),
                 _ => continue,
             }
@@ -758,6 +791,7 @@ mod tests {
     async fn allocates_through_the_401_challenge() {
         let server = spawn_turn_server("alice", "s3cret", "hivebear.com").await;
         let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let io = (sock, server);
 
         let mut client = TurnClient::new(
             server,
@@ -767,7 +801,7 @@ mod tests {
             },
         );
 
-        let allocation = client.allocate(&sock).await.expect("allocation");
+        let allocation = client.allocate(&io).await.expect("allocation");
         assert_eq!(
             allocation.relayed_addr,
             "203.0.113.50:50000".parse::<SocketAddr>().unwrap()
@@ -775,9 +809,9 @@ mod tests {
         assert_eq!(allocation.lifetime_secs, 600);
 
         // Refresh and ChannelBind reuse the learned realm and nonce.
-        client.refresh(&sock, 600).await.expect("refresh");
+        client.refresh(&io, 600).await.expect("refresh");
         client
-            .bind_channel(&sock, 0x4001, "198.51.100.7:7878".parse().unwrap())
+            .bind_channel(&io, 0x4001, "198.51.100.7:7878".parse().unwrap())
             .await
             .expect("channel bind");
     }
@@ -786,6 +820,7 @@ mod tests {
     async fn the_wrong_password_is_rejected() {
         let server = spawn_turn_server("alice", "s3cret", "hivebear.com").await;
         let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let io = (sock, server);
 
         let mut client = TurnClient::new(
             server,
@@ -796,7 +831,7 @@ mod tests {
         );
 
         assert!(
-            client.allocate(&sock).await.is_err(),
+            client.allocate(&io).await.is_err(),
             "a bad credential must not yield an allocation"
         );
     }
@@ -805,6 +840,7 @@ mod tests {
     async fn a_channel_outside_the_valid_range_is_refused_locally() {
         let server = spawn_turn_server("alice", "s3cret", "hivebear.com").await;
         let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let io = (sock, server);
         let mut client = TurnClient::new(
             server,
             TurnCredentials {
@@ -812,10 +848,10 @@ mod tests {
                 password: "s3cret".into(),
             },
         );
-        client.allocate(&sock).await.unwrap();
+        client.allocate(&io).await.unwrap();
 
         assert!(client
-            .bind_channel(&sock, 0x0001, "198.51.100.7:7878".parse().unwrap())
+            .bind_channel(&io, 0x0001, "198.51.100.7:7878".parse().unwrap())
             .await
             .is_err());
     }

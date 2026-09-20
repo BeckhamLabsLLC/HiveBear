@@ -58,4 +58,16 @@ pub trait MeshTransport: Send + Sync {
     async fn discovered_external_addr(&self) -> Option<SocketAddr> {
         None
     }
+
+    /// Permit `peer` to reach us through our TURN allocation.
+    ///
+    /// Only the peer behind a symmetric NAT needs an allocation: everyone
+    /// else simply dials the relayed address it advertises. What the
+    /// allocating node must do is authorise each peer, or the relay drops
+    /// their traffic. Defaults to an error for transports with no relay.
+    async fn relay_to(&self, _peer: SocketAddr) -> Result<()> {
+        Err(crate::error::MeshError::Relay(
+            "this transport has no relay".into(),
+        ))
+    }
 }
