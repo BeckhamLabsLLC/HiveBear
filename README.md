@@ -84,7 +84,10 @@ scoop bucket add hivebear https://github.com/BeckhamLabsLLC/scoop-hivebear
 scoop install hivebear
 
 # Build from source
-cargo install --git https://github.com/BeckhamLabsLLC/HiveBear hivebear-cli
+cargo install --git https://github.com/BeckhamLabsLLC/HiveBear hivebear-cli --locked
+# --locked builds the dependency versions this release was tested with.
+# Without it cargo re-resolves every dependency to the newest compatible
+# release, which is not what we build or test.
 ```
 
 > **Docker images are not published yet.** The `build-docker` jobs have failed

@@ -250,11 +250,29 @@ jobs:
           key: ubuntu-cargo-install-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ubuntu-cargo-install-
 
-      - name: cargo install from path
-        run: cargo install --path crates/hivebear-cli
+      # Gate the release on the dependency versions we actually ship. The
+      # release binaries are built from Cargo.lock, so an unlocked install
+      # compiles a different set of crates than anything we publish.
+      - name: cargo install from path (locked)
+        run: cargo install --path crates/hivebear-cli --locked
 
       - name: Verify binary
         run: hivebear --version
+
+      # The README's install command re-resolves everything, so upstream can
+      # break it without a commit here. A fresh resolve currently moves ~279
+      # packages. Report it, but do not hold the release hostage to it.
+      - name: Check unlocked install (advisory)
+        id: unlocked
+        continue-on-error: true
+        run: cargo install --path crates/hivebear-cli --force
+
+      - name: Warn on dependency drift
+        if: steps.unlocked.outcome != 'success'
+        run: |
+          echo "::warning title=Unlocked cargo install failed::\
+          'cargo install' without --locked no longer compiles. Users who omit \
+          --locked will hit this. Check which dependency changed API."
 
   build-docker:
     name: Build Docker (${{ matrix.variant }})
