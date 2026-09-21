@@ -1,0 +1,121 @@
+name: Docker
+
+# The Docker images used to be built only by release.yml, on a tag. Nothing
+# exercised them in between, so a broken image was discovered at the worst
+# possible moment and every release from the project's first one shipped
+# without images. Build them on main as well, so a regression shows up on the
+# commit that caused it; push only for a tag or a deliberate dispatch.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "Dockerfile*"
+      - "Cargo.lock"
+      - "crates/**"
+      - ".github/workflows/docker.yml"
+  workflow_dispatch:
+    inputs:
+      push_images:
+        description: "Push the built images to ghcr.io"
+        type: boolean
+        default: false
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Docker (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            dockerfile: Dockerfile
+            tag_suffix: ""
+          - variant: cuda
+            dockerfile: Dockerfile.cuda
+            tag_suffix: "-cuda"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide whether to publish
+        id: mode
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          DISPATCH_PUSH: ${{ inputs.push_images }}
+        run: |
+          if [ "$IS_TAG" = "true" ] || [ "$DISPATCH_PUSH" = "true" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.mode.outputs.push == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SUFFIX: ${{ matrix.tag_suffix }}
+        run: |
+          if [ "${{ steps.mode.outputs.push }}" = "true" ]; then
+            {
+              echo "tags<<EOF"
+              echo "ghcr.io/beckhamlabsllc/hivebear:${REF_NAME}${SUFFIX}"
+              echo "ghcr.io/beckhamlabsllc/hivebear:latest${SUFFIX}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=hivebear:ci${SUFFIX}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build${{ steps.mode.outputs.push == 'true' && ' and push' || '' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ steps.mode.outputs.push == 'true' }}
+          load: ${{ steps.mode.outputs.push != 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=docker-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
+
+      # The chown that broke both images would have produced a working build
+      # and a container that could not write its data directory, so check the
+      # thing that actually matters rather than just that the build exited 0.
+      - name: Check the image runs as non-root with a writable data dir
+        if: steps.mode.outputs.push != 'true'
+        env:
+          IMAGE: hivebear:ci${{ matrix.tag_suffix }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "$IMAGE" -c '
+            set -e
+            [ "$(id -un)" = "hivebear" ] || { echo "running as $(id -un), expected hivebear"; exit 1; }
+            touch /data/.probe || { echo "/data is not writable by $(id -un)"; exit 1; }
+            echo "ok: $(id -un), /data writable"
+          '
+          docker run --rm "$IMAGE" --version

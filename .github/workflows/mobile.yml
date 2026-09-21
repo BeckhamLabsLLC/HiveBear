@@ -1,9 +1,15 @@
 name: Mobile Build
 
+# Run this deliberately, not on every tag.
+#
+# Android is not a shipped product here (the order is web, then desktop, then
+# CLI), and the `mobile` feature disables the local inference engines, so the
+# APK cannot run a model anyway. This build has never once succeeded: it fails
+# in the Android SDK setup, which still asks for the obsolete `tools` package.
+# Leaving it on the tag trigger put a red X on every release for something
+# nobody ships, which makes a real release failure easy to miss. Restore the
+# tag trigger once Android is something we actually ship.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
