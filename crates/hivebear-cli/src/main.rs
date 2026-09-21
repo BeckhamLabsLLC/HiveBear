@@ -3,6 +3,7 @@ mod account_commands;
 mod api;
 mod pipeline_handler;
 mod registry_commands;
+mod telemetry;
 
 /// Build an HTTP client for talking to the coordination server.
 ///
@@ -30,6 +31,8 @@ use hivebear_core::types::format_bytes;
 use hivebear_core::{Config, HardwareProfile, ModelRecommendation};
 use hivebear_inference::{ChatMessage, GenerateRequest, LoadConfig, Orchestrator, SamplingParams};
 use hivebear_mesh::discovery::PeerDiscovery;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 #[command(
@@ -335,6 +338,13 @@ enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+
+    /// Show crash-reporting status, and optionally send a test event
+    SentryCheck {
+        /// Send a test event to verify reporting works end to end
+        #[arg(long)]
+        send: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -509,14 +519,30 @@ fn create_orchestrator(hw: HardwareProfile) -> Orchestrator {
 async fn main() {
     let cli = Cli::parse();
 
-    // Set up logging
+    // Config has to be read before logging is set up, because whether crash
+    // reporting is on is a config question and Sentry wants to be initialised
+    // before anything that might fail.
+    let mut config = hivebear_core::Config::load();
+
+    // Held for the lifetime of the process; dropping it stops reporting.
+    let _sentry = telemetry::init(&mut config);
+
+    // Set up logging.
+    //
+    // Composed as a registry rather than the previous `fmt()` one-liner so the
+    // Sentry layer can sit alongside the formatter. The important part is the
+    // panic hook that `sentry` installs: this binary has ~45 fire-and-forget
+    // `tokio::spawn` sites whose JoinHandles are dropped, so until now a panic
+    // inside any of them killed the task silently, with no log line and no
+    // effect on the exit code.
     let filter = if cli.verbose { "debug" } else { "warn" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
         )
-        .with_target(false)
+        .with(tracing_subscriber::fmt::layer().with_target(false))
+        .with(sentry::integrations::tracing::layer())
         .init();
 
     // Auto-start a background mesh node for commands that merely *benefit*
@@ -541,8 +567,6 @@ async fn main() {
             false
         }
     };
-
-    let mut config = hivebear_core::Config::load();
 
     // Honour --coordinator before the background node is built. `serve` in
     // particular accepted the flag and then discarded it, so the override
@@ -657,11 +681,78 @@ async fn main() {
         } => cmd_share(title, model, max_chatters, expires, coordinator).await,
         Commands::Update { check } => cmd_update(check).await,
         Commands::Uninstall { purge, yes } => cmd_uninstall(purge, yes).await,
+        Commands::SentryCheck { send } => cmd_sentry_check(send),
     }
 
     // Graceful mesh shutdown
     if let Some(node) = MESH_NODE.get() {
         let _ = node.stop().await;
+    }
+
+    // Most subcommands finish in well under a second — faster than the
+    // background transport would otherwise get an event out.
+    telemetry::flush();
+}
+
+/// `hivebear sentry-check` — report whether crash reporting is active and why.
+///
+/// Exists because the failure mode being fixed here is a silent one: without a
+/// way to ask, "no events in Sentry" is indistinguishable between "nothing has
+/// gone wrong" and "reporting was never working".
+fn cmd_sentry_check(send: bool) {
+    use hivebear_core::telemetry::{
+        resolve, DisabledReason, TelemetryDecision, DSN_ENV, TELEMETRY_ENV,
+    };
+
+    let config = Config::load();
+    let decision = resolve(&config.telemetry);
+
+    println!("{}", "Crash reporting".bold());
+    match &decision {
+        TelemetryDecision::Enabled { .. } => {
+            println!("  status:     {}", "enabled".green());
+        }
+        TelemetryDecision::Disabled(reason) => {
+            println!("  status:     {}", "disabled".yellow());
+            let explanation = match reason {
+                DisabledReason::EnvOptOut => format!("{TELEMETRY_ENV} is set to a falsey value"),
+                DisabledReason::DoNotTrack => "DO_NOT_TRACK is set".to_string(),
+                DisabledReason::ConfigOptOut => {
+                    "telemetry.enabled = false in the config file".to_string()
+                }
+                DisabledReason::NoDsn => format!(
+                    "no DSN — this is a source build, or {DSN_ENV} is unset. \
+                     Official release builds have one compiled in."
+                ),
+            };
+            println!("  reason:     {explanation}");
+        }
+    }
+
+    println!(
+        "  config:    {}",
+        hivebear_core::AppPaths::new().config_file.display()
+    );
+    println!(
+        "  install id: {}",
+        config
+            .telemetry
+            .install_id
+            .as_deref()
+            .unwrap_or("(not yet generated)")
+    );
+    println!("  opt out:    {TELEMETRY_ENV}=0   (or DO_NOT_TRACK=1)");
+
+    if send {
+        println!();
+        if telemetry::send_test_event() {
+            println!("{}", "Test event sent.".green());
+        } else {
+            println!(
+                "{}",
+                "Reporting is disabled, so no test event was sent.".yellow()
+            );
+        }
     }
 }
 

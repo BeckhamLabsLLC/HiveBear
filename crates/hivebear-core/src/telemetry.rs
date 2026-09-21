@@ -152,6 +152,101 @@ pub fn resolve(config: &TelemetryConfig) -> TelemetryDecision {
     }
 }
 
+// ── Redaction ────────────────────────────────────────────────────────
+//
+// Shared by every HiveBear binary. Error strings here are built with `format!`
+// from whatever failed, so they routinely end up carrying a model path under the
+// user's home directory, a cloud provider key, or the text of a prompt. The
+// binaries apply this in their Sentry `before_send`.
+
+/// Replace the username inside a home-directory path with `<user>`.
+///
+/// `/home/alice/.config/...` is not obviously personal data until you notice it
+/// contains a real person's name, and these paths appear in almost every I/O
+/// error the CLI produces.
+fn redact_home_paths(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+
+    // Windows uses backslashes; everything else uses forward slashes.
+    const PREFIXES: [(&str, char); 4] = [
+        ("/home/", '/'),
+        ("/Users/", '/'),
+        ("C:\\Users\\", '\\'),
+        ("\\Users\\", '\\'),
+    ];
+
+    'outer: loop {
+        for (prefix, sep) in PREFIXES {
+            if let Some(idx) = rest.find(prefix) {
+                let after = idx + prefix.len();
+                out.push_str(&rest[..after]);
+                let tail = &rest[after..];
+                let end = tail.find(sep).unwrap_or(tail.len());
+                if end > 0 {
+                    out.push_str("<user>");
+                }
+                rest = &tail[end..];
+                continue 'outer;
+            }
+        }
+        break;
+    }
+
+    out.push_str(rest);
+    out
+}
+
+/// Known cloud-provider key shapes, longest prefix first so `sk-ant-` is not
+/// half-matched by `sk-`.
+const KEY_PREFIXES: [&str; 6] = ["sk-ant-", "sk-", "gsk_", "hf_", "xai-", "AIza"];
+
+fn redact_api_keys(input: &str) -> String {
+    let mut out = input.to_string();
+    for prefix in KEY_PREFIXES {
+        while let Some(idx) = out.find(prefix) {
+            let after = idx + prefix.len();
+            let tail = &out[after..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                .unwrap_or(tail.len());
+            // A bare prefix with nothing after it is not a key. Break rather
+            // than continue, or this spins forever on the same match.
+            if end == 0 {
+                break;
+            }
+            out.replace_range(idx..after + end, "[redacted-key]");
+        }
+    }
+    out
+}
+
+fn redact_emails(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for token in input.split_inclusive(char::is_whitespace) {
+        let trimmed = token.trim_end();
+        let looks_like_email = trimmed.contains('@')
+            && trimmed.split('@').count() == 2
+            && trimmed.split('@').nth(1).is_some_and(|d| d.contains('.'));
+        if looks_like_email {
+            out.push_str("[email]");
+            out.push_str(&token[trimmed.len()..]);
+        } else {
+            out.push_str(token);
+        }
+    }
+    out
+}
+
+/// Strip the things a HiveBear error message should never carry off-device.
+///
+/// Applied to exception values, log messages and breadcrumbs before they leave
+/// the process. It is a backstop, not the primary defence — the primary defence
+/// is not putting secrets in error strings in the first place.
+pub fn redact_sensitive(input: &str) -> String {
+    redact_emails(&redact_api_keys(&redact_home_paths(input)))
+}
+
 /// The one-time notice shown on first run when reporting is active.
 pub fn first_run_notice() -> String {
     format!(
@@ -336,5 +431,91 @@ mod tests {
         let (a, _) = TelemetryConfig::default().ensure_install_id();
         let (b, _) = TelemetryConfig::default().ensure_install_id();
         assert_ne!(a, b);
+    }
+
+    // ── Redaction ────────────────────────────────────────────────────
+
+    #[test]
+    fn strips_the_username_from_unix_home_paths() {
+        let out = redact_sensitive("failed to open /home/alice/.hivebear/models/q4.gguf");
+        assert!(!out.contains("alice"), "{out}");
+        assert!(
+            out.contains("/home/<user>/.hivebear/models/q4.gguf"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn strips_the_username_from_macos_and_windows_home_paths() {
+        let mac = redact_sensitive("no such file: /Users/bob/Library/App/hivebear.toml");
+        assert!(!mac.contains("bob"), "{mac}");
+        assert!(mac.contains("/Users/<user>/Library"), "{mac}");
+
+        let win = redact_sensitive(r"cannot write C:\Users\carol\AppData\hivebear.db");
+        assert!(!win.contains("carol"), "{win}");
+        assert!(win.contains(r"C:\Users\<user>\AppData"), "{win}");
+    }
+
+    #[test]
+    fn strips_every_home_path_in_a_message_not_just_the_first() {
+        let out = redact_sensitive("copy /home/dave/a.gguf to /home/dave/b.gguf");
+        assert!(!out.contains("dave"), "{out}");
+        assert_eq!(out.matches("<user>").count(), 2, "{out}");
+    }
+
+    #[test]
+    fn strips_cloud_provider_api_keys() {
+        for key in [
+            "sk-abcdef1234567890",
+            "sk-ant-api03-abcdef123456",
+            "gsk_abcdef1234567890",
+            "hf_abcdefABCDEF123456",
+            "xai-abcdef1234567890",
+        ] {
+            let out = redact_sensitive(&format!("auth failed with key {key} for provider"));
+            assert!(!out.contains(key), "leaked {key}: {out}");
+            assert!(out.contains("[redacted-key]"), "{out}");
+        }
+    }
+
+    /// `sk-ant-` must not be half-matched by the shorter `sk-` prefix, leaving
+    /// the distinctive part of the key behind.
+    #[test]
+    fn longer_key_prefixes_win_over_shorter_ones() {
+        let out = redact_sensitive("key sk-ant-api03-SECRETVALUE end");
+        assert!(!out.contains("SECRETVALUE"), "{out}");
+        assert!(!out.contains("api03"), "{out}");
+    }
+
+    #[test]
+    fn strips_email_addresses() {
+        let out = redact_sensitive("login rejected for someone@example.com (401)");
+        assert!(!out.contains("someone@example.com"), "{out}");
+        assert!(out.contains("[email]"), "{out}");
+    }
+
+    /// Over-redaction makes reports useless, so ordinary text must survive.
+    #[test]
+    fn leaves_ordinary_diagnostics_alone() {
+        let input = "connection refused to mesh.hivebear.com:7878 after 3 retries";
+        assert_eq!(redact_sensitive(input), input);
+
+        let input = "model llama-3-8b failed to load: out of memory (8192 MB required)";
+        assert_eq!(redact_sensitive(input), input);
+    }
+
+    /// A relative or system path has no username in it and should not be touched.
+    #[test]
+    fn leaves_non_home_paths_alone() {
+        let input = "failed to read /usr/share/hivebear/default.toml";
+        assert_eq!(redact_sensitive(input), input);
+    }
+
+    #[test]
+    fn redaction_terminates_on_pathological_input() {
+        // A bare prefix with no username after it must not loop forever.
+        assert_eq!(redact_sensitive("/home/"), "/home/");
+        assert_eq!(redact_sensitive("sk-"), "sk-");
+        assert_eq!(redact_sensitive("/home//home//home/"), "/home//home//home/");
     }
 }
