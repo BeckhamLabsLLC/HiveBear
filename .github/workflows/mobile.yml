@@ -91,8 +91,13 @@ jobs:
         run: |
           export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cd apps/desktop
-          cargo tauri android build --target aarch64 --target x86_64 \
-            -- --no-default-features --features mobile
+          # `tauri android build` (CLI 2.5) takes no trailing `--` args and has
+          # no --no-default-features, which is what this step used to pass and
+          # why it died with "unexpected argument '--no-default-features'".
+          # It does not need them: candle is compiled out on Android by target
+          # cfg, so the default feature set is already the right one.
+          cargo tauri android build --apk --target aarch64 --target x86_64 \
+            --features mobile
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

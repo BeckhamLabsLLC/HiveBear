@@ -3,10 +3,18 @@ pub mod dummy;
 #[cfg(feature = "llamacpp")]
 pub mod llamacpp;
 
-#[cfg(all(any(feature = "candle", feature = "wasm"), not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(feature = "candle", feature = "wasm"),
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
 pub mod candle_backend;
 
-#[cfg(all(any(feature = "candle", feature = "wasm"), not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(feature = "candle", feature = "wasm"),
+    not(target_arch = "wasm32"),
+    not(target_os = "android")
+))]
 pub(crate) mod candle_pipeline;
 
 #[cfg(all(any(feature = "candle", feature = "wasm"), target_arch = "wasm32"))]
@@ -167,7 +175,11 @@ impl EngineRegistry {
         let mut backends: Vec<Box<dyn InferenceBackend>> = vec![
             #[cfg(feature = "llamacpp")]
             Box::new(llamacpp::LlamaCppBackend::new()),
-            #[cfg(all(any(feature = "candle", feature = "wasm"), not(target_arch = "wasm32")))]
+            #[cfg(all(
+                any(feature = "candle", feature = "wasm"),
+                not(target_arch = "wasm32"),
+                not(target_os = "android")
+            ))]
             Box::new(candle_backend::CandleBackend::new()),
             #[cfg(all(any(feature = "candle", feature = "wasm"), target_arch = "wasm32"))]
             Box::new(candle_wasm::CandleWasmBackend::new()),
@@ -282,7 +294,7 @@ mod tests {
         assert!(all.iter().any(|b| b.name() == "Dummy"));
     }
 
-    #[cfg(feature = "candle")]
+    #[cfg(all(feature = "candle", not(target_os = "android")))]
     #[test]
     fn test_find_for_format_gguf() {
         let registry = EngineRegistry::new();
