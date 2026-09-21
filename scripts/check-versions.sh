@@ -45,6 +45,16 @@ check "desktop package.json" "apps/desktop/package.json" \
 check "homebrew formula" "packaging/homebrew/hivebear.rb" \
     "$(grep -m1 '^  version ' packaging/homebrew/hivebear.rb | sed -E 's/.*version "([^"]+)".*/\1/')"
 
+# The formula shipped for four releases with PLACEHOLDER_* checksums, so it
+# could never have installed anything. A stale version is visible; a placeholder
+# checksum just fails at `brew install` time on someone else's machine.
+if grep -q 'PLACEHOLDER' packaging/homebrew/hivebear.rb; then
+    echo "MISMATCH  homebrew formula still has PLACEHOLDER checksums — run scripts/update-homebrew-formula.sh" >&2
+    status=1
+else
+    echo "ok        homebrew checksums are filled in"
+fi
+
 if [[ $status -ne 0 ]]; then
     echo >&2
     echo "Bump every file above to $expected before releasing." >&2
