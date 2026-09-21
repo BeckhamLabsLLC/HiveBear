@@ -593,10 +593,27 @@ impl MeshNode {
     ///
     /// Spawns a task that listens, registers with discovery, and starts
     /// maintenance. Returns immediately so the CLI startup path is never
-    /// blocked by network issues. Errors are logged, not propagated.
-    pub fn start_background(self: &Arc<Self>, listen_addr: SocketAddr, local_info: PeerInfo) {
+    /// blocked by network issues. Errors from the background task itself are
+    /// logged, not propagated.
+    ///
+    /// Requires an entered Tokio runtime. `tokio::spawn` panics when there is
+    /// none, and on Android that panic unwound across the FFI boundary and
+    /// aborted the whole app with SIGABRT, right after the first frame
+    /// rendered. The caller guarded this with `if let Err(..)`, which a panic
+    /// does not trigger. Return an error instead so a caller on a thread
+    /// without a reactor gets a bad mesh rather than a dead process.
+    pub fn start_background(
+        self: &Arc<Self>,
+        listen_addr: SocketAddr,
+        local_info: PeerInfo,
+    ) -> Result<()> {
+        let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+            crate::error::MeshError::Transport(
+                "start_background must be called from a Tokio runtime context".to_string(),
+            )
+        })?;
         let node = Arc::clone(self);
-        tokio::spawn(async move {
+        handle.spawn(async move {
             match node.start(listen_addr, local_info).await {
                 Ok(()) => {
                     node.start_maintenance();
@@ -607,6 +624,7 @@ impl MeshNode {
                 }
             }
         });
+        Ok(())
     }
 
     /// Stop the mesh node gracefully.

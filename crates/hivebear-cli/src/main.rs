@@ -460,7 +460,10 @@ fn maybe_start_mesh(
     };
 
     // Start in background — never blocks the CLI
-    node.start_background(listen_addr, local_info);
+    if let Err(e) = node.start_background(listen_addr, local_info) {
+        tracing::warn!("Could not start the mesh in the background: {e}");
+        return None;
+    }
 
     Some(node)
 }

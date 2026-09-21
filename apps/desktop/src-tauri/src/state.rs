@@ -159,8 +159,25 @@ impl AppState {
             draft_capability: None,
         };
 
-        // Start in background — never blocks the caller
-        node.start_background(listen_addr, local_info);
+        // Start in background — never blocks the caller.
+        //
+        // Spawn through Tauri's runtime rather than relying on an ambient
+        // Tokio one. setup() runs on a thread that has no reactor entered on
+        // Android, so MeshNode::start_background's `tokio::spawn` panicked
+        // there and took the whole app down with SIGABRT just after the first
+        // frame. tauri::async_runtime::spawn works from any thread, and the
+        // task it starts is itself inside the runtime, so the maintenance
+        // loop this kicks off can spawn freely.
+        let mesh = Arc::clone(&node);
+        tauri::async_runtime::spawn(async move {
+            match mesh.start(listen_addr, local_info).await {
+                Ok(()) => {
+                    mesh.start_maintenance();
+                    info!("Mesh node {} running in background", mesh.local_id);
+                }
+                Err(e) => warn!("Background mesh start failed (non-fatal): {e}"),
+            }
+        });
         info!("Mesh node starting in background");
 
         *self.mesh_node.lock().unwrap_or_else(|e| e.into_inner()) = Some(node);
