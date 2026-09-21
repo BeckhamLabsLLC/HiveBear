@@ -8,6 +8,7 @@ pub mod profiler;
 pub mod recommender;
 #[cfg(all(not(target_arch = "wasm32"), feature = "keychain"))]
 pub mod secrets;
+pub mod telemetry;
 pub mod types;
 
 // Re-export key types for convenience
@@ -19,6 +20,7 @@ pub use profiler::profile;
 #[cfg(target_arch = "wasm32")]
 pub use profiler::profile_async;
 pub use recommender::model_db::ModelCategory;
+pub use telemetry::{TelemetryConfig, TelemetryDecision};
 pub use types::{
     BenchmarkResult, CommunityBenchmarkSubmission, CommunityBenchmarkSummary, ComputeApi,
     HardwareProfile, InferenceEngine, ModelRecommendation, Quantization,
