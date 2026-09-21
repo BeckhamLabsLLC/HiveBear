@@ -1,15 +1,9 @@
 name: Mobile Build
 
-# Run this deliberately, not on every tag.
-#
-# Android is not a shipped product here (the order is web, then desktop, then
-# CLI), and the `mobile` feature disables the local inference engines, so the
-# APK cannot run a model anyway. This build has never once succeeded: it fails
-# in the Android SDK setup, which still asks for the obsolete `tools` package.
-# Leaving it on the tag trigger put a red X on every release for something
-# nobody ships, which makes a real release failure easy to miss. Restore the
-# tag trigger once Android is something we actually ship.
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -55,11 +49,20 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
+      # v3.2.2 defaulted to installing the obsolete `tools` package, which
+      # Google withdrew from the SDK repository; sdkmanager then exits 1 with
+      # "Failed to find package 'tools'" and this job never got any further.
+      # v4 defaults to platform-tools. Ask for exactly what the committed
+      # Gradle project needs (compileSdk/targetSdk 36, AGP 8.11) plus the NDK
+      # the Rust cross-build uses, so nothing is left to on-demand resolution.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
-
-      - name: Install Android NDK
-        run: sdkmanager --install "ndk;27.1.12297006"
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: >-
+            platform-tools
+            platforms;android-36
+            build-tools;36.0.0
+            ndk;27.1.12297006
 
       - name: Install frontend dependencies
         run: |
