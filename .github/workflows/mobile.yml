@@ -80,6 +80,35 @@ jobs:
       - name: Install tauri-cli
         run: cargo install tauri-cli@2.5.0 --locked
 
+      # A release APK with no signing config comes out unsigned and will not
+      # install. app/build.gradle.kts falls back to the debug key so the
+      # artifact is always usable; supply these secrets to sign it properly
+      # for distribution instead.
+      - name: Configure release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::notice title=Android signing::No ANDROID_KEYSTORE_BASE64 \
+          secret set, so the release APK is signed with the debug key. It will \
+          install for testing but is not suitable for distribution."
+            exit 0
+          fi
+          cd apps/desktop/src-tauri/gen/android/app
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          umask 077
+          cat > keystore.properties <<PROPS
+          storeFile=release.keystore
+          storePassword=${STORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          PROPS
+          echo "Release keystore configured."
+
       - name: Build Android APK
         env:
           # llama-cpp-sys-2 finds the NDK through ANDROID_NDK, ANDROID_NDK_ROOT,

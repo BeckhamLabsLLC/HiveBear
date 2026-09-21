@@ -4,3 +4,8 @@
 /tauri.build.gradle.kts
 /proguard-tauri.pro
 /tauri.properties
+
+# Release signing material, written by CI from secrets. Never commit these.
+/keystore.properties
+/release.keystore
+*.jks
