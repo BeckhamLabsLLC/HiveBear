@@ -121,9 +121,12 @@ impl AppState {
                 security_mode,
                 None,
             ));
+        // Hand the client the identity: /register demands a signature over
+        // "register:{node_id}:{timestamp}" and rejects anything without one.
         let discovery: Arc<dyn hivebear_mesh::discovery::PeerDiscovery> = Arc::new(
-            hivebear_mesh::discovery::server::CoordinationServerClient::new(
+            hivebear_mesh::discovery::server::CoordinationServerClient::with_identity(
                 config.mesh.coordination_server.clone(),
+                Arc::new(identity.clone()),
             ),
         );
 
