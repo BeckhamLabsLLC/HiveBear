@@ -26,6 +26,14 @@ jobs:
         with:
           targets: aarch64-linux-android,x86_64-linux-android
 
+      # rust-toolchain.toml pins the version, so the toolchain the action just
+      # set up is not the one cargo will use. Add the targets to the pinned
+      # toolchain as well, or the build fails with "can't find crate for
+      # `core`". ci.yml already does this for the aarch64 cross-check; this
+      # job never got the same treatment.
+      - name: Add Android targets to the pinned toolchain
+        run: rustup target add aarch64-linux-android x86_64-linux-android
+
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
