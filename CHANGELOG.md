@@ -5,9 +5,58 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.8] - 2026-09-21
 
-### Fixed
+A node can now register with the coordinator. None ever could before, so the
+mesh had no members at all — the peer count has been zero since March. Android
+also runs models on the device instead of only through a remote peer.
+
+### Fixed — the mesh
+
+- **No client could register.** `node_id` was serialized with
+  `serialize_bytes`, and JSON has no byte type, so it went out as an array of
+  32 numbers while the coordinator declares `node_id` as a string and
+  validates it with `hex::decode`. Every `/register` and `/heartbeat` came
+  back `422 Unprocessable Entity`. It now encodes as hex for human-readable
+  formats and keeps the compact byte form for bincode, which is what the mesh
+  wire protocol uses.
+- **Registration carried no proof of key.** `/register` requires a `signature`
+  over `register:{node_id}:{timestamp}` and rejects anything without one, but
+  the discovery client held no signing key, so it could not have produced one
+  even with the encoding right. It now signs with the node identity.
+- **Registered nodes still saw an empty mesh.** `GET /peers` authenticates the
+  caller, and peer discovery was the one request that did not send the
+  registration token. The `401` was folded into an empty result, so a broken
+  mesh was indistinguishable from an idle one.
+
+### Added
+
+- **On-device inference on Android.** llama.cpp now compiles into the APK for
+  arm64 and x86_64, so a phone runs models locally rather than only relaying
+  to a peer. Candle stays out on Android — its ARM FP16 build issues are
+  unchanged — so it is excluded by target rather than by feature.
+- **Crash reporting**, off unless you turn it on, for the CLI, the desktop app,
+  its webview, and Android. The DSN is compiled in only for official release
+  builds, so anything built from source cannot report regardless of config.
+  See `docs/telemetry.md` for exactly what is sent.
+
+### Fixed — Android
+
+- **The app died moments after launch.** Mesh auto-start called `tokio::spawn`
+  from a thread with no runtime entered — desktop happens to have one there,
+  Android does not — and the panic unwound across the FFI boundary into
+  `SIGABRT`. The guard around it tested for `Err`, which a panic never
+  produces. It now spawns through Tauri's runtime, and the mesh returns an
+  error instead of panicking, so a library can no longer abort its host.
+- **The APK was never installable.** The release build had no signing config,
+  so it came out unsigned and Android refused it. Release builds are signed
+  when a keystore is configured, and fall back to the debug key otherwise
+  rather than producing something unusable.
+- **The Android build had never once succeeded.** The SDK setup asked for the
+  obsolete `tools` package, and the Rust targets were added to the wrong
+  toolchain, so it failed before reaching a build.
+
+### Fixed — build and packaging
 
 - **The Docker images build.** With libclang added, the build reached the
   runtime stage and failed there instead: `chown: cannot access '/data'`.
@@ -18,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hivebear` user with `/data` owned by it and writable. A package pushed to
   ghcr for the first time is private, so it must be made public before
   `docker pull` works for anyone.
+- Docker images are built on every change to `main` now, not only when a
+  release is tagged. Both faults above had accumulated behind that blind spot.
+- `cargo install tauri-cli` uses `--force`. The cargo cache restores
+  `~/.cargo/bin`, so every run after a successful one failed with "binary
+  `cargo-tauri` already exists in destination" — including the release job.
+- The Homebrew formula carries real checksums instead of placeholders, and a
+  version check fails the build when the four files that declare the version
+  disagree. The formula had been stuck at 0.1.3 while everything else moved.
+- All 11 npm advisories in the desktop app are cleared, including a
+  react-router RCE.
 
 ## [0.1.7] - 2026-09-20
 
