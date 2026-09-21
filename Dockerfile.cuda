@@ -36,13 +36,17 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /build/target/release/hivebear /usr/local/bin/hivebear
 
+# Create the non-root user and its data directory BEFORE declaring the volume.
+# VOLUME does not create the directory, so the chown had nothing to act on
+# ("chown: cannot access '/data'"), and anything written to a volume path after
+# VOLUME is declared is discarded by the builder anyway.
+RUN groupadd -r hivebear && useradd -r -g hivebear -d /data -s /sbin/nologin hivebear \
+    && mkdir -p /data \
+    && chown -R hivebear:hivebear /data
+
 # Default model storage inside container
 ENV HIVEBEAR_DATA_DIR=/data
 VOLUME /data
-
-# Create non-root user for security
-RUN groupadd -r hivebear && useradd -r -g hivebear -d /data -s /sbin/nologin hivebear \
-    && chown -R hivebear:hivebear /data
 
 USER hivebear
 

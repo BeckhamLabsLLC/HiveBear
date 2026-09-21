@@ -5,6 +5,20 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Docker images build.** With libclang added, the build reached the
+  runtime stage and failed there instead: `chown: cannot access '/data'`.
+  `VOLUME /data` does not create the directory, and anything written to a
+  volume path after `VOLUME` is declared is discarded, so the image had never
+  got this far to show it. The user and data directory are now created before
+  the volume is declared. Verified locally: the image runs as the non-root
+  `hivebear` user with `/data` owned by it and writable. A package pushed to
+  ghcr for the first time is private, so it must be made public before
+  `docker pull` works for anyone.
+
 ## [0.1.7] - 2026-09-20
 
 The mesh did not work before this release. Several independent defects each
@@ -64,14 +78,12 @@ the specific failures.
   locations, so config and the whole model cache survived.
 - `install.sh` could **reject a valid download** through an over-broad
   checksum match.
-- **The Docker images build again.** They had failed on every release the
-  project ever cut. `llama-cpp-sys-2` generates its bindings with bindgen,
-  which needs libclang at build time; the GitHub runners ship clang, so the
-  ordinary CI builds stayed green, while the slim Rust and CUDA base images
-  do not, so only the Docker builds failed. The Rust version was bumped three
-  times chasing this and never touched the cause. Note that a package pushed
-  to ghcr for the first time is private, so it has to be made public before
-  `docker pull` works for anyone.
+- **The Docker build gets further, but still does not publish an image.** The
+  first cause is fixed: `llama-cpp-sys-2` generates its bindings with bindgen,
+  which needs libclang, and the slim Rust and CUDA base images do not ship it
+  (the GitHub runners do, which is why ordinary CI stayed green). The Rust
+  version was bumped three times chasing this and never touched the cause.
+  A second fault was hiding behind it and is fixed for the next release.
 - **`cargo install` did not compile.** It ignores `Cargo.lock`, so it picked
   up llama-cpp-2 0.1.156, which added a parameter to `LlamaSampler::penalties`
   in a patch release. Both llama-cpp crates are now pinned, and the README's
