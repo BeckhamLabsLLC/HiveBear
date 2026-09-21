@@ -33,12 +33,8 @@ encoding_rs = "0.8"
 base64 = "0.22"
 
 # Optional engines (feature-gated)
-# Pinned exactly. llama-cpp-2 changes public signatures in patch releases
-# (0.1.156 added an n_vocab parameter to LlamaSampler::penalties), and cargo
-# treats all 0.1.x as compatible. Our builds use Cargo.lock and stayed green
-# while `cargo install hivebear-cli`, which resolves fresh, failed to compile
-# for every user. Bump this deliberately, with the call sites.
-llama-cpp-2 = { version = "=0.1.141", optional = true }
+# llama-cpp-2 is declared per target further down: Android needs a different
+# C++ standard library linkage from every other platform.
 # llama-cpp-2 depends on llama-cpp-sys-2 as "0.1.141", which permits any
 # 0.1.x, so the -sys crate floats even when llama-cpp-2 is pinned: a fresh
 # resolve paired llama-cpp-2 0.1.141 with llama-cpp-sys-2 0.1.156, whose
@@ -63,6 +59,29 @@ tokio-stream = "0.1"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 getrandom = { version = "0.2", features = ["js"] }
+
+# llama.cpp, declared per target because Android links C++ differently.
+#
+# Pinned exactly on both entries: llama-cpp-2 changes public signatures in
+# patch releases (0.1.156 added an n_vocab parameter to
+# LlamaSampler::penalties) and cargo treats every 0.1.x as compatible, so an
+# unpinned `cargo install` stopped compiling for users while our lockfile
+# builds stayed green. Move these two together, with the call sites.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false, features = [
+    "openmp",
+] }
+
+# Android: link libc++ statically. With the default shared linkage the APK has
+# to ship libc++_shared.so alongside the native library, and a missing one
+# fails at dlopen time on the device rather than in the build. The two stdcxx
+# features are mutually exclusive in llama-cpp-sys-2 (it panics if both are
+# set), so this cannot just be added to the entry above. That build script
+# also forces GGML_OPENMP off for Android, which is why OpenMP is absent here.
+[target.'cfg(target_os = "android")'.dependencies]
+llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false, features = [
+    "android-static-stdcxx",
+] }
 
 [features]
 default = ["candle", "llamacpp"]

@@ -36,9 +36,10 @@ llamacpp-metal = ["llamacpp", "hivebear-inference/llamacpp-metal"]
 llamacpp-cuda = ["llamacpp", "hivebear-inference/llamacpp-cuda"]
 llamacpp-vulkan = ["llamacpp", "hivebear-inference/llamacpp-vulkan"]
 candle = ["hivebear-inference/candle"]
-# Mobile: no local inference engines initially (Candle has ARM FP16 build issues).
-# Enables mesh participation, model browsing, and chat via remote inference.
-mobile = []
+# Mobile: llama.cpp runs on-device, so Android gets local inference rather
+# than only remote. Candle stays out — it has ARM FP16 build issues — so this
+# is deliberately not the desktop default set.
+mobile = ["hivebear-inference/llamacpp"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
 
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -74,17 +74,25 @@ jobs:
 
       - name: Build Android APK
         env:
+          # llama-cpp-sys-2 finds the NDK through ANDROID_NDK, ANDROID_NDK_ROOT,
+          # NDK_ROOT or CARGO_NDK_ANDROID_NDK — not NDK_HOME, which is all this
+          # job used to set — and needs it to locate
+          # build/cmake/android.toolchain.cmake for the cross build.
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
-          CC_aarch64_linux_android: aarch64-linux-android35-clang
-          CC_armv7_linux_androideabi: armv7a-linux-androideabi35-clang
-          CC_x86_64_linux_android: x86_64-linux-android35-clang
+          # app/build.gradle.kts declares minSdk 24, but the native code was
+          # being compiled against API 35, which would fail to load on any
+          # device below 35. Build the native side against 24 to match.
+          ANDROID_PLATFORM: android-24
+          CC_aarch64_linux_android: aarch64-linux-android24-clang
+          CC_x86_64_linux_android: x86_64-linux-android24-clang
           AR_aarch64_linux_android: llvm-ar
-          AR_armv7_linux_androideabi: llvm-ar
           AR_x86_64_linux_android: llvm-ar
         run: |
-          export PATH="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cd apps/desktop
-          cargo tauri android build -- --no-default-features --features mobile
+          cargo tauri android build --target aarch64 --target x86_64 \
+            -- --no-default-features --features mobile
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
