@@ -413,9 +413,12 @@ fn maybe_start_mesh(
         // on a throwaway socket.
         .with_stun_servers(config.mesh.stun_servers.clone()),
     );
+    // /register requires a signature over "register:{node_id}:{timestamp}",
+    // so the client needs the signing key, not just the url.
     let discovery: Arc<dyn hivebear_mesh::discovery::PeerDiscovery> = Arc::new(
-        hivebear_mesh::discovery::server::CoordinationServerClient::new(
+        hivebear_mesh::discovery::server::CoordinationServerClient::with_identity(
             config.mesh.coordination_server.clone(),
+            std::sync::Arc::new(identity.clone()),
         ),
     );
 
@@ -1991,8 +1994,9 @@ async fn cmd_mesh(action: MeshAction) {
                 None,
             ));
             let discovery = Arc::new(
-                hivebear_mesh::discovery::server::CoordinationServerClient::new(
+                hivebear_mesh::discovery::server::CoordinationServerClient::with_identity(
                     config.mesh.coordination_server.clone(),
+                    std::sync::Arc::new(identity.clone()),
                 ),
             );
 
@@ -2659,14 +2663,19 @@ async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator: 
 
     // Step 3: Connect to coordinator and matchmake
     println!("{}", "Step 3/4: Connecting to network...".cyan());
-    let coordinator =
-        hivebear_mesh::discovery::server::CoordinationServerClient::new(coordinator_url.clone());
-
     let identity_path = hivebear_core::AppPaths::new()
         .data_dir
         .join("node_identity.key");
     let identity = hivebear_mesh::NodeIdentity::load_or_generate(&identity_path)
         .unwrap_or_else(|_| hivebear_mesh::NodeIdentity::generate());
+
+    // Built after the identity exists: registering without a signature is
+    // rejected, and this is the contributor path — if it cannot register,
+    // nobody can join the mesh.
+    let coordinator = hivebear_mesh::discovery::server::CoordinationServerClient::with_identity(
+        coordinator_url.clone(),
+        std::sync::Arc::new(identity.clone()),
+    );
     let node_id_hex = identity.node_id.to_hex();
     let listen_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
     let local_info = hivebear_mesh::PeerInfo {

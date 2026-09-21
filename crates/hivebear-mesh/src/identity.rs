@@ -11,6 +11,7 @@ use crate::peer::NodeId;
 /// The identity is loaded from disk if it exists, or generated fresh
 /// and saved for future runs. This ensures TOFU certificate pinning
 /// and reputation scores persist across restarts.
+#[derive(Clone)]
 pub struct NodeIdentity {
     pub node_id: NodeId,
     pub signing_key: SigningKey,

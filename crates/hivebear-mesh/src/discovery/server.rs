@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use ed25519_dalek::Signer;
 use tracing::{debug, warn};
 
 use super::PeerDiscovery;
 use crate::error::{MeshError, Result};
+use crate::identity::NodeIdentity;
 use crate::peer::PeerInfo;
 
 /// Client for the centralized coordination server.
@@ -24,6 +28,13 @@ pub struct CoordinationServerClient {
     /// it — and send_signal treats a non-success status as non-fatal, so NAT
     /// signalling failed completely silently.
     auth_token: tokio::sync::Mutex<Option<String>>,
+    /// Signing key used to prove ownership of the node id at registration.
+    ///
+    /// POST /register requires `signature` and `timestamp` alongside
+    /// `node_id`, and rejects the request outright without them. This client
+    /// posted a bare PeerInfo and carried no key, so registration could never
+    /// have succeeded even once the node_id encoding was right.
+    identity: Option<Arc<NodeIdentity>>,
 }
 
 impl CoordinationServerClient {
@@ -43,7 +54,77 @@ impl CoordinationServerClient {
                 .unwrap_or_default(),
             node_info: tokio::sync::Mutex::new(None),
             auth_token: tokio::sync::Mutex::new(None),
+            identity: None,
         }
+    }
+
+    /// Build a client that can prove key ownership at registration.
+    ///
+    /// Prefer this. Without an identity the server rejects /register with 400
+    /// ("Registration without proof-of-key"), which leaves the node running
+    /// but undiscoverable.
+    pub fn with_identity(base_url: String, identity: Arc<NodeIdentity>) -> Self {
+        Self {
+            identity: Some(identity),
+            ..Self::new(base_url)
+        }
+    }
+
+    /// Build the signed registration body the coordination server expects.
+    ///
+    /// The server reads `node_id`, `signature` and `timestamp` off the top
+    /// level, stores `region`/`hardware_json`/`total_*_bytes` in their own
+    /// columns, and keeps everything else under a flattened `extra` which is
+    /// what GET /peers hands back — so the full PeerInfo has to stay in the
+    /// body for peer discovery to return anything usable.
+    fn registration_body(&self, info: &PeerInfo) -> Result<serde_json::Value> {
+        let identity = self.identity.as_ref().ok_or_else(|| {
+            MeshError::Discovery(
+                "Cannot register without a node identity: the coordination server requires a \
+                 signature proving ownership of the node id"
+                    .to_string(),
+            )
+        })?;
+
+        let mut body = match serde_json::to_value(info) {
+            Ok(serde_json::Value::Object(map)) => map,
+            Ok(other) => {
+                return Err(MeshError::Discovery(format!(
+                    "PeerInfo did not serialize to an object: {other}"
+                )))
+            }
+            Err(e) => {
+                return Err(MeshError::Discovery(format!(
+                    "Could not serialize PeerInfo: {e}"
+                )))
+            }
+        };
+
+        let node_id_hex = identity.node_id.to_hex();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| MeshError::Discovery(format!("System clock before the epoch: {e}")))?
+            .as_secs()
+            .to_string();
+        let message = format!("register:{node_id_hex}:{timestamp}");
+        let signature = hex::encode(identity.signing_key.sign(message.as_bytes()).to_bytes());
+
+        body.insert("node_id".into(), serde_json::Value::String(node_id_hex));
+        body.insert("timestamp".into(), serde_json::Value::String(timestamp));
+        body.insert("signature".into(), serde_json::Value::String(signature));
+        body.insert(
+            "total_ram_bytes".into(),
+            serde_json::json!(info.available_memory_bytes as i64),
+        );
+        body.insert(
+            "total_vram_bytes".into(),
+            serde_json::json!(info.available_vram_bytes as i64),
+        );
+        if let Ok(hardware) = serde_json::to_string(&info.hardware) {
+            body.insert("hardware_json".into(), serde_json::Value::String(hardware));
+        }
+
+        Ok(serde_json::Value::Object(body))
     }
 
     /// Token issued at registration, if we have one.
@@ -69,7 +150,9 @@ impl PeerDiscovery for CoordinationServerClient {
         // Store info for heartbeats
         *self.node_info.lock().await = Some(info.clone());
 
-        match self.http.post(&url).json(info).send().await {
+        let body = self.registration_body(info)?;
+
+        match self.http.post(&url).json(&body).send().await {
             Ok(resp) if resp.status().is_success() => {
                 // Keep the bearer token; /signal and the other authenticated
                 // endpoints are unusable without it.

@@ -46,15 +46,35 @@ impl fmt::Display for NodeId {
     }
 }
 
+// JSON has no byte type, so `serialize_bytes` there produces an array of 32
+// numbers. The coordination server declares node_id as a String and validates
+// it with hex::decode, so every registration and heartbeat was rejected:
+//
+//   422 Unprocessable Entity — node_id: invalid type: sequence, expected a
+//   string at line 1 column 11
+//
+// That applied to every client, not just one platform, and it is a large part
+// of why the coordinator reported zero peers. Emit hex for human-readable
+// formats and keep the compact 32-byte form for bincode, which is what the
+// mesh wire protocol uses.
 impl Serialize for NodeId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(&self.0.to_bytes())
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_hex())
+        } else {
+            serializer.serialize_bytes(&self.0.to_bytes())
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for NodeId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
+        let bytes: Vec<u8> = if deserializer.is_human_readable() {
+            let hex_str = String::deserialize(deserializer)?;
+            hex::decode(hex_str).map_err(serde::de::Error::custom)?
+        } else {
+            Vec::deserialize(deserializer)?
+        };
         let key = VerifyingKey::from_bytes(
             bytes
                 .as_slice()
@@ -142,5 +162,63 @@ mod tests {
         let serialized = bincode::serialize(&id).unwrap();
         let deserialized: NodeId = bincode::deserialize(&serialized).unwrap();
         assert_eq!(id, deserialized);
+    }
+
+    /// The coordination server declares node_id as a String and validates it
+    /// with hex::decode. Serializing bytes instead produced a JSON array, so
+    /// every /register and /heartbeat came back 422 and no client could ever
+    /// appear in the peer list.
+    #[test]
+    fn node_id_is_a_hex_string_in_json() {
+        let (id, _) = NodeId::generate();
+        let value = serde_json::to_value(&id).unwrap();
+        let encoded = value
+            .as_str()
+            .unwrap_or_else(|| panic!("node_id must be a JSON string, got {value}"));
+        assert_eq!(encoded.len(), 64, "expected 32 bytes hex-encoded");
+        assert_eq!(hex::decode(encoded).unwrap().len(), 32);
+        assert_eq!(serde_json::from_value::<NodeId>(value).unwrap(), id);
+    }
+
+    /// The mesh wire protocol is bincode, where the compact byte form matters;
+    /// only the human-readable branch should be hex.
+    #[test]
+    fn node_id_stays_compact_in_bincode() {
+        let (id, _) = NodeId::generate();
+        let binary = bincode::serialize(&id).unwrap();
+        let json = serde_json::to_vec(&id).unwrap();
+        assert!(
+            binary.len() < json.len(),
+            "bincode ({}) should stay smaller than hex JSON ({})",
+            binary.len(),
+            json.len()
+        );
+        assert_eq!(bincode::deserialize::<NodeId>(&binary).unwrap(), id);
+    }
+
+    /// PeerInfo is what gets POSTed to /register, so the field the server
+    /// keys on must survive as a string there too.
+    #[test]
+    fn peer_info_json_carries_node_id_as_a_string() {
+        let (id, _) = NodeId::generate();
+        let info = PeerInfo {
+            node_id: id.clone(),
+            hardware: hivebear_core::profile(),
+            available_memory_bytes: 0,
+            available_vram_bytes: 0,
+            network_bandwidth_mbps: 0.0,
+            latency_ms: None,
+            tier: crate::MeshTier::Free,
+            reputation_score: 1.0,
+            addr: "127.0.0.1:7878".parse().unwrap(),
+            external_addr: None,
+            nat_type: crate::NatType::Unknown,
+            latency_map: std::collections::HashMap::new(),
+            serving_model_id: None,
+            swarm_id: None,
+            draft_capability: None,
+        };
+        let value = serde_json::to_value(&info).unwrap();
+        assert_eq!(value["node_id"].as_str().unwrap(), id.to_hex());
     }
 }
