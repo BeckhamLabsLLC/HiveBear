@@ -78,7 +78,11 @@ jobs:
           npm install
 
       - name: Install tauri-cli
-        run: cargo install tauri-cli@2.5.0 --locked
+        # --force because the cargo cache restores ~/.cargo/bin, and a
+        # second run then fails with "binary `cargo-tauri` already exists
+        # in destination". That breaks every run following a successful
+        # one, which is the worst possible cadence for a release job.
+        run: cargo install tauri-cli@2.5.0 --locked --force
 
       # A release APK with no signing config comes out unsigned and will not
       # install. app/build.gradle.kts falls back to the debug key so the

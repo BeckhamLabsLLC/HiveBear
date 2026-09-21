@@ -168,7 +168,11 @@ jobs:
           npm install
 
       - name: Install tauri-cli
-        run: cargo install tauri-cli@2.5.0 --locked
+        # --force because the cargo cache restores ~/.cargo/bin, and a
+        # second run then fails with "binary `cargo-tauri` already exists
+        # in destination". That breaks every run following a successful
+        # one, which is the worst possible cadence for a release job.
+        run: cargo install tauri-cli@2.5.0 --locked --force
 
       - name: Build Tauri app (default features)
         if: matrix.tauri_features == ''
