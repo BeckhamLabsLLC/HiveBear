@@ -10,6 +10,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Baked into the binary at compile time via option_env!. Only the release
+  # builds get one, so anything built from source — by a contributor, by a
+  # distro packager — physically cannot report, whatever the config says.
+  HIVEBEAR_SENTRY_DSN: ${{ secrets.HIVEBEAR_SENTRY_DSN }}
+  # Build-time secret, distinct from the DSN. Used by @sentry/vite-plugin to
+  # upload the desktop webview's source maps; without it the plugin is skipped
+  # and frontend stack traces stay minified.
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
 jobs:
   build-cli:

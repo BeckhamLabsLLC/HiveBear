@@ -28,6 +28,9 @@ sha2 = "0.10"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sysinfo = "0.33"
 directories = "6"
+# Only used to mint the random per-install telemetry ID. Native-only: the WASM
+# build returns default config and never generates one.
+uuid = { version = "1", features = ["v4"] }
 wgpu = { version = "24", features = ["vulkan-portability"] }
 keyring = { version = "3", optional = true }
 

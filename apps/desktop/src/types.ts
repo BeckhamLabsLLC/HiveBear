@@ -73,6 +73,14 @@ export interface Config {
   top_n_recommendations: number;
   share_benchmarks: boolean;
   default_context_length: number;
+  // Anonymous crash reporting. `install_id` and `notice_shown` are managed by
+  // the Rust side and only listed here so they survive the config round trip —
+  // Settings sends the whole object back, and a missing field would reset them.
+  telemetry: {
+    enabled: boolean;
+    install_id: string | null;
+    notice_shown: boolean;
+  };
   // Mesh config (flattened for form state)
   mesh_enabled?: boolean;
   mesh_port?: number;

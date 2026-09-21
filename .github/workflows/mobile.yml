@@ -11,6 +11,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # See release.yml — compiled in, so source builds stay silent.
+  HIVEBEAR_SENTRY_DSN: ${{ secrets.HIVEBEAR_SENTRY_DSN }}
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
 jobs:
   build-android:

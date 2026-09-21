@@ -26,3 +26,14 @@ version = "0.1.7"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/BeckhamLabsLLC/HiveBear"
+
+[profile.release]
+# Without this, release builds carry no debug info at all and every crash report
+# is a list of hex addresses. The Sentry Rust SDK symbolicates in-process from
+# the binary's own symbols, so keeping line tables here is all that is needed —
+# no upload step, no risk of a release shipping unsymbolicated because CI failed.
+# "line-tables-only" is the cheap tier: file and line numbers, no variable info.
+debug = "line-tables-only"
+# Deliberately not stripped. `strip = true` would delete exactly what the line
+# above adds.
+strip = "none"

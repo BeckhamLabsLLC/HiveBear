@@ -8,3 +8,4 @@ pub mod mesh;
 pub mod profile;
 pub mod registry;
 pub mod secrets;
+pub mod telemetry;

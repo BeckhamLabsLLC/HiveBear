@@ -62,9 +62,36 @@ impl From<hivebear_registry::RegistryError> for CommandError {
     }
 }
 
+impl ErrorCode {
+    /// Whether a failure with this code is worth reporting.
+    ///
+    /// `ModelNotFound` is excluded because it is an ordinary outcome of looking
+    /// up a name that does not exist — reporting it would bury the real faults
+    /// under routine misses. Everything else is a genuine failure: a download
+    /// that broke, an engine that would not start, a config that would not
+    /// parse. Those are exactly the onboarding failures that are currently
+    /// invisible.
+    fn should_report(&self) -> bool {
+        !matches!(self, ErrorCode::ModelNotFound)
+    }
+}
+
 /// Convert CommandError to String for Tauri IPC.
+///
+/// Every one of the 46 `#[tauri::command]` functions returns `CmdResult<T>`,
+/// which is `Result<T, String>`, and every error path goes through this
+/// conversion — so this is the one place that sees every backend failure the
+/// frontend is ever told about.
 impl From<CommandError> for String {
     fn from(e: CommandError) -> Self {
+        if e.code.should_report() {
+            // The message is redacted in `before_send`; command errors routinely
+            // interpolate model paths under the user's home directory.
+            sentry::with_scope(
+                |scope| scope.set_tag("error.code", format!("{:?}", e.code)),
+                || sentry::capture_message(&e.message, sentry::Level::Error),
+            );
+        }
         serde_json::to_string(&e).unwrap_or(e.message)
     }
 }

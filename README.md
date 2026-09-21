@@ -151,6 +151,36 @@ hivebear list / remove / storage       Manage installed models
 - **Browser**: WASM + WebGPU
 - **Docker**: CPU and CUDA images
 
+## Crash Reports
+
+Official HiveBear builds send anonymous crash reports, so we hear about the
+things that break on hardware we do not have. It is on by default and takes one
+command to turn off:
+
+```bash
+# Any of these disables it permanently
+export HIVEBEAR_TELEMETRY=0
+export DO_NOT_TRACK=1            # honoured, as a matter of course
+hivebear sentry-check            # show whether it is on, and why
+```
+
+In the desktop app it is a toggle under **Settings → Crash Reports**.
+
+**What is sent:** the error and its stack trace, the HiveBear version, your OS
+and CPU architecture, and a random identifier generated on your machine.
+
+**What is never sent:** your prompts, chat history, model files, file contents,
+email address, IP address, API keys, or mesh identity. File paths are stripped
+of your username before they leave the machine.
+
+The random identifier exists only so we can tell "one person hit this 400 times"
+apart from "400 people hit it once". It is not derived from your hardware or
+your mesh keypair, and it is not linked to anything else.
+
+If you build HiveBear from source, there is no reporting endpoint compiled in at
+all — a source build cannot report anything even if the setting says it should.
+That includes every distro package built from this repository.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The most impactful contributions right now are around the mesh networking layer and hardware profiling coverage.

@@ -44,6 +44,10 @@ pub struct Config {
     /// Account and subscription configuration.
     #[serde(default)]
     pub account: AccountConfig,
+
+    /// Anonymous crash and error reporting.
+    #[serde(default)]
+    pub telemetry: crate::telemetry::TelemetryConfig,
 }
 
 /// Configuration for the P2P inference mesh.
@@ -95,7 +99,7 @@ pub struct MeshConfig {
     pub transfer_dtype: String,
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }
 
@@ -331,6 +335,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             cloud: CloudConfig::default(),
             account: AccountConfig::default(),
+            telemetry: crate::telemetry::TelemetryConfig::default(),
         }
     }
 }

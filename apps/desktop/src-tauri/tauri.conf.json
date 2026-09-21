@@ -22,7 +22,7 @@
     ],
     "enableGTKAppId": true,
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://huggingface.co https://*.huggingface.co; font-src 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://huggingface.co https://*.huggingface.co https://*.sentry.io; font-src 'self'"
     }
   },
   "plugins": {
