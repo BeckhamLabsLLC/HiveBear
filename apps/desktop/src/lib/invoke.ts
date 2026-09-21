@@ -1,4 +1,5 @@
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
+import * as Sentry from "@sentry/react";
 import { notify } from "../components/Toast";
 import type {
   BenchmarkResult, ChatMessage, Config, Conversation, HardwareProfile, InstalledInfo,
@@ -68,9 +69,42 @@ function normalize(command: string, err: unknown): InvokeError {
   return new InvokeError(command, String(err), null, err);
 }
 
+/**
+ * Decide whether a rejected IPC call is worth reporting from the frontend.
+ *
+ * The Rust side already reports every command failure through the
+ * `From<CommandError> for String` boundary, complete with the real error type
+ * and a backtrace — far better data than we have here. Reporting those again
+ * from JS would file a second, worse-quality issue for every backend fault and
+ * double the event spend.
+ *
+ * What Rust does *not* see is a failure in the IPC layer itself: a command name
+ * that does not exist, a serialization failure, a webview that lost its bridge.
+ * Those arrive as an `Error` instance rather than our string/`{code,message}`
+ * convention, and they are the ones worth capturing here.
+ */
+function isIpcLayerFailure(raw: unknown): boolean {
+  return raw instanceof Error;
+}
+
 function invoke<T>(command: string, args?: Record<string, unknown>, opts?: InvokeOptions): Promise<T> {
   return (rawInvoke<T>(command, args) as Promise<T>).catch((e) => {
     const ie = normalize(command, e);
+
+    // A breadcrumb either way, so that when something *is* reported the trail of
+    // failed calls leading up to it is visible. Argument values are deliberately
+    // omitted: these carry prompts, API keys and passwords.
+    Sentry.addBreadcrumb({
+      category: "ipc",
+      level: "error",
+      message: `${command} failed`,
+      data: { command, code: ie.code ?? "none" },
+    });
+
+    if (isIpcLayerFailure(ie.raw)) {
+      Sentry.captureException(ie, { tags: { command, layer: "ipc" } });
+    }
+
     if (!opts?.silent) {
       notify(friendlyMessage(command, ie.code, ie.message, opts?.label), "error");
     }

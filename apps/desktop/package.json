@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@sentry/react": "^10.75.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-shell": "^2",
@@ -26,6 +27,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@sentry/vite-plugin": "^5.4.0",
     "@tailwindcss/vite": "^4",
     "@testing-library/jest-dom": "^6",
     "@testing-library/react": "^16",

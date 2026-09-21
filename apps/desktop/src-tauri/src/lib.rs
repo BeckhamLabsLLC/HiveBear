@@ -1,19 +1,31 @@
 mod commands;
 mod error;
 mod state;
+mod telemetry;
 mod validation;
 
 use state::AppState;
 use tauri::Manager;
 use tracing::{error, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
+    // Before anything that can fail. Config is read directly rather than through
+    // AppState because AppState::init is itself one of the things that fails.
+    let mut config = hivebear_core::Config::load();
+    let _sentry = telemetry::init(&mut config);
+
+    // Composed as a registry so the Sentry layer sits beside the formatter.
+    // Worth noting what this replaces: stdout at `warn` level, on a binary built
+    // with `windows_subsystem = "windows"` and shipped to Android — neither of
+    // which has a console. For real users these logs went nowhere at all.
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with(tracing_subscriber::fmt::layer())
+        .with(sentry::integrations::tracing::layer())
         .init();
 
     tauri::Builder::default()
@@ -108,6 +120,8 @@ pub fn run() {
             commands::account::revoke_api_key,
             commands::device::get_device_status,
             commands::device::can_contribute_to_mesh,
+            commands::telemetry::telemetry_status,
+            commands::telemetry::acknowledge_telemetry_notice,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
@@ -121,7 +135,12 @@ pub fn run() {
 /// Record a startup failure where a user can actually be pointed at it.
 /// The data directory may itself be the thing that is broken, so fall back to
 /// the temp directory.
+///
+/// Also reports it. A local log file only helps a user who knows to look for it
+/// and knows how to send it to us; for a startup crash — where there is no
+/// window and nothing on screen — that is close to nobody.
 fn write_startup_failure(message: &str) {
+    telemetry::capture_fatal(message);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

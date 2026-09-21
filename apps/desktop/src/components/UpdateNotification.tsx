@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { motion, AnimatePresence } from "motion/react";
 import { Download, X, RefreshCw } from "lucide-react";
+import { reportError } from "../lib/telemetry";
 
 type Stage = "available" | "downloading" | "ready" | "error";
 
@@ -21,8 +22,13 @@ export default function UpdateNotification() {
         if (!cancelled && result?.available) {
           setUpdate(result);
         }
-      } catch {
-        // Silent — update check failures are non-fatal
+      } catch (err) {
+        // Non-fatal for the user, but not something we can afford to swallow:
+        // a broken update check is invisible by design, and v0.1.5 sat
+        // un-updatable for six months because nothing reported this.
+        if (!cancelled) {
+          reportError(err, { area: "updater", phase: "check" });
+        }
       }
     };
 
@@ -52,7 +58,10 @@ export default function UpdateNotification() {
         }
       });
       setStage("ready");
-    } catch {
+    } catch (err) {
+      // The user sees "error" and can retry; we need to know *why*, because a
+      // download or signature failure here means nobody can update.
+      reportError(err, { area: "updater", phase: "download" });
       setStage("error");
     }
   };

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRight, Check, Cpu, Network, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Cpu, Network, ShieldCheck, Sparkles } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 
 const STORAGE_KEY = "hivebear.onboarded.v1";
 const EVENT_KEY = "hivebear:onboarding-changed";
@@ -53,7 +54,16 @@ const SLIDES: Slide[] = [
   {
     icon: <Cpu size={20} className="text-paw-500" aria-hidden />,
     title: "One quick check",
-    body: "Next, HiveBear will inspect your CPU, memory, GPU, and disk speed so it can recommend models that actually run well on this device. Everything stays local — nothing is uploaded.",
+    body: "Next, HiveBear will inspect your CPU, memory, GPU, and disk speed so it can recommend models that actually run well on this device. Your hardware details stay on this device.",
+  },
+  {
+    icon: <ShieldCheck size={20} className="text-paw-500" aria-hidden />,
+    title: "If something breaks",
+    body: "HiveBear sends anonymous crash reports so we can fix problems we'd otherwise never hear about. You can turn this off at any time in Settings.",
+    bullets: [
+      "Never your prompts, chat history, model files or account details.",
+      "No name, email or IP address — just the error and a random ID.",
+    ],
   },
 ];
 
@@ -61,7 +71,14 @@ export default function WelcomeModal() {
   const done = useHasOnboarded();
   const [index, setIndex] = useState(0);
 
-  const finish = useCallback(() => markOnboarded(), []);
+  const finish = useCallback(() => {
+    markOnboarded();
+    // Record that the crash-reporting notice has actually been shown. Opt-out
+    // reporting is only defensible if people are told, and this is what lets the
+    // Rust side stop owing the notice. Failing to record it is harmless — the
+    // notice would simply be shown again.
+    void invoke("acknowledge_telemetry_notice").catch(() => {});
+  }, []);
   const next = useCallback(() => {
     if (index >= SLIDES.length - 1) finish();
     else setIndex((i) => i + 1);

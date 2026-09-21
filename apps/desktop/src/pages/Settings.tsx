@@ -106,6 +106,17 @@ export default function Settings() {
             <Field label="Share Benchmarks" hint="Anonymously contribute to community database">
               <Toggle checked={form.share_benchmarks} onChange={(v) => setForm({ ...form, share_benchmarks: v })} />
             </Field>
+            <Field
+              label="Crash Reports"
+              hint="Send anonymous crash reports so we can fix what breaks. No prompts, no chat history, no account details."
+            >
+              <Toggle
+                checked={form.telemetry?.enabled ?? true}
+                onChange={(v) =>
+                  setForm({ ...form, telemetry: { ...form.telemetry, enabled: v } })
+                }
+              />
+            </Field>
           </SettingsSection>
 
           {/* Mesh */}

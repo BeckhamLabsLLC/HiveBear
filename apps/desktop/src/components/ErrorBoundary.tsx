@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import * as Sentry from "@sentry/react";
 
 interface Props {
   children: ReactNode;
@@ -19,6 +20,15 @@ export default class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: ErrorInfo) {
     // eslint-disable-next-line no-console
     console.error("[ErrorBoundary]", error, info.componentStack);
+
+    // This boundary is the outermost one in App.tsx, so anything reaching it has
+    // already taken the whole UI down and replaced it with the panel below. On a
+    // packaged app the console it was logged to does not exist.
+    Sentry.captureException(error, {
+      contexts: {
+        react: { componentStack: info.componentStack ?? undefined },
+      },
+    });
   }
 
   handleReload = () => {
