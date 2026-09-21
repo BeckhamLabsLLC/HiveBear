@@ -150,6 +150,17 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The version is hand-copied into three files besides the workspace
+      # Cargo.toml, and nothing checked them — the Homebrew formula sat four
+      # releases behind. Sentry keys release health off these strings, so drift
+      # makes the two halves of the same app look like different releases.
+      - run: ./scripts/check-versions.sh
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest

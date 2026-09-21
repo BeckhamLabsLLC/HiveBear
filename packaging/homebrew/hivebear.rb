@@ -1,7 +1,12 @@
+# NOTE: the sha256 values below are still PLACEHOLDERs, so this formula cannot
+# actually install anything. It needs the real checksums filled in from
+# SHA256SUMS.txt at release time before it is published to a tap.
+# `scripts/check-versions.sh` keeps the version line in step with the workspace;
+# it cannot do anything about the checksums.
 class Hivebear < Formula
   desc "AI that fits your machine — run LLMs on any device regardless of GPU"
   homepage "https://github.com/BeckhamLabsLLC/HiveBear"
-  version "0.1.3"
+  version "0.1.7"
   license "MIT"
 
   on_macos do
