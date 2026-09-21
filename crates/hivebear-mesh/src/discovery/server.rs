@@ -206,7 +206,10 @@ impl PeerDiscovery for CoordinationServerClient {
         );
         debug!("Finding peers via {url}");
 
-        match self.http.get(&url).send().await {
+        // GET /peers authenticates the caller, so without the registration
+        // token it answers 401 and the node sees an empty mesh. Every peer
+        // could register and still never discover another one.
+        match self.authed(self.http.get(&url)).await.send().await {
             Ok(resp) if resp.status().is_success() => {
                 let peers: Vec<PeerInfo> = resp
                     .json()
@@ -214,6 +217,18 @@ impl PeerDiscovery for CoordinationServerClient {
                     .map_err(|e| MeshError::Discovery(format!("Failed to parse peer list: {e}")))?;
                 debug!("Found {} peers from coordination server", peers.len());
                 Ok(peers)
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                // Distinguish this from "nobody is out there". An empty list
+                // here means we are not authenticated, usually because
+                // registration never succeeded, and silently returning it
+                // makes a broken mesh look like an idle one.
+                warn!(
+                    "Peer discovery rejected as unauthenticated. The node is not registered \
+                     with {}, so it cannot see any peers.",
+                    self.base_url
+                );
+                Ok(Vec::new())
             }
             Ok(resp) => {
                 let status = resp.status();
