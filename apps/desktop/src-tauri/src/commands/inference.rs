@@ -88,6 +88,7 @@ pub async fn stream_chat(
         .map_err(|e| String::from(crate::error::CommandError::from(e)))?;
 
     let mut full_text = String::new();
+    let mut failed = false;
     while let Some(result) = stream.next().await {
         match result {
             Ok(token) => {
@@ -96,9 +97,17 @@ pub async fn stream_chat(
             }
             Err(e) => {
                 let _ = window.emit("chat-error", e.to_string());
+                failed = true;
                 break;
             }
         }
+    }
+
+    if !failed && !full_text.is_empty() {
+        // Once per install, and a no-op if usage counts are turned off.
+        tauri::async_runtime::spawn(hivebear_core::usage::send_usage_event_once(
+            hivebear_core::usage::EVENT_FIRST_INFERENCE,
+        ));
     }
 
     let _ = window.emit("chat-done", ());

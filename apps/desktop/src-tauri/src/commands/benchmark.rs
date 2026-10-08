@@ -1,9 +1,14 @@
 use crate::error::CmdResult;
 use crate::state::AppState;
+use hivebear_core::benchmark::submit;
 use hivebear_core::types::{BenchmarkResult, CommunityBenchmarkSummary, ProfileMode};
-use hivebear_core::{CommunityBenchmarkSubmission, HardwareFingerprint};
+use hivebear_core::HardwareFingerprint;
+use hivebear_inference::benchmark::BenchmarkConfig;
+use serde::Serialize;
 use tauri::State;
 
+/// Synthetic CPU estimate, for when no model is installed. Never shareable:
+/// it measures a matmul loop, not a model.
 #[tauri::command]
 pub async fn run_benchmark(duration_secs: Option<u32>) -> CmdResult<Option<BenchmarkResult>> {
     let mode = ProfileMode::Benchmark {
@@ -14,7 +19,78 @@ pub async fn run_benchmark(duration_secs: Option<u32>) -> CmdResult<Option<Bench
         .map_err(|e| format!("Benchmark task failed: {e}"))
 }
 
-/// Share an anonymized benchmark result with the community.
+/// A real benchmark of an installed model, with what sharing it needs.
+#[derive(Serialize)]
+pub struct ModelBenchmarkResult {
+    pub result: BenchmarkResult,
+    pub model_id: String,
+    /// The real quantization, or "unknown". Never "auto".
+    pub quantization: String,
+    pub engine: String,
+    pub context_length: u32,
+}
+
+/// Load an installed model, benchmark it, and unload it.
+///
+/// Same measurement as `hivebear benchmark --model`, via the shared
+/// `hivebear_inference::benchmark::benchmark_model_file`.
+#[tauri::command]
+pub async fn run_model_benchmark(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> CmdResult<ModelBenchmarkResult> {
+    let path = state
+        .registry
+        .resolve(&model_id)
+        .await
+        .map_err(|e| format!("Could not find installed model '{model_id}': {e}"))?;
+
+    // Prefer what the registry recorded at install time; fall back to the
+    // filename, which is where that came from in the first place.
+    let recorded_quant = state
+        .registry
+        .list_installed()
+        .await
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .and_then(|m| m.installed)
+        .and_then(|i| i.quantization)
+        .map(|q| q.to_string());
+
+    // Fewer tokens than the CLI default so the desktop run is ~30s, not minutes.
+    let config = BenchmarkConfig {
+        prefill_tokens: 128,
+        generate_tokens: 128,
+        warmup_runs: 1,
+        iterations: 2,
+    };
+
+    let bench = hivebear_inference::benchmark::benchmark_model_file(
+        &state.orchestrator,
+        &path,
+        &model_id,
+        &config,
+    )
+    .await
+    .map_err(|e| String::from(crate::error::CommandError::from(e)))?;
+
+    Ok(ModelBenchmarkResult {
+        quantization: recorded_quant
+            .or(bench.quantization)
+            .unwrap_or_else(|| "unknown".to_string()),
+        engine: bench.engine,
+        context_length: bench.context_length,
+        model_id,
+        result: bench.result,
+    })
+}
+
+/// Share a real benchmark result to the community leaderboard.
+///
+/// Clicking Share is the consent, so this does not consult
+/// `share_benchmarks` (that setting only controls automatic sharing).
+/// Anonymous unless signed in. Errors are returned, not swallowed: this used
+/// to answer `Ok(false)` for every failure, and the UI could not say why.
 #[tauri::command]
 pub async fn share_benchmark(
     state: State<'_, AppState>,
@@ -22,6 +98,7 @@ pub async fn share_benchmark(
     model_id: String,
     quantization: String,
     engine: String,
+    context_length: Option<u32>,
 ) -> CmdResult<bool> {
     let config = state
         .config
@@ -29,35 +106,19 @@ pub async fn share_benchmark(
         .map_err(|_| String::from("Config lock poisoned"))?
         .clone();
 
-    if !config.share_benchmarks {
-        return Ok(false);
-    }
+    let submission = submit::build_submission(
+        &result,
+        &state.profile,
+        &model_id,
+        &quantization,
+        &engine,
+        context_length.unwrap_or(hivebear_inference::benchmark::BENCHMARK_CONTEXT_LENGTH),
+    );
 
-    let fp = HardwareFingerprint::from_profile(&state.profile);
-    let submission = CommunityBenchmarkSubmission {
-        hardware_fingerprint: fp,
-        model_id,
-        quantization,
-        engine,
-        context_length: 4096,
-        benchmark_type: result.benchmark_type,
-        tokens_per_sec: result.tokens_per_sec,
-        time_to_first_token_ms: Some(result.time_to_first_token_ms),
-        prompt_eval_tokens_per_sec: result.prompt_eval_tokens_per_sec,
-        peak_memory_bytes: result.peak_memory_bytes,
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-
-    let url = format!("{}/benchmarks", config.mesh.coordination_server);
-    let mut req = state.http_client.post(&url).json(&submission);
-    if let Some(ref token) = config.account.jwt_token {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => Ok(true),
-        _ => Ok(false),
-    }
+    submit::submit_benchmark(&config, &submission)
+        .await
+        .map_err(|e| format!("Could not share benchmark: {e}"))?;
+    Ok(true)
 }
 
 /// Fetch community benchmark data for the user's hardware profile.

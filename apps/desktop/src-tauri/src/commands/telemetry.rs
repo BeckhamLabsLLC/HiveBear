@@ -54,6 +54,24 @@ pub fn acknowledge_telemetry_notice() -> Result<(), String> {
     config.save().map_err(|e| e.to_string())
 }
 
+/// Send a usage count whose timing only the webview knows.
+///
+/// `first_launch` is sent when the welcome screen closes rather than at
+/// startup, so the "anonymous usage counts" switch on that screen is honoured
+/// before anything is sent. Only events the webview owns are accepted; the
+/// rest are sent from Rust where they happen.
+#[tauri::command]
+pub async fn record_usage_event(event: String) -> Result<(), String> {
+    use hivebear_core::usage;
+    match event.as_str() {
+        usage::EVENT_FIRST_LAUNCH => {
+            usage::send_usage_event_once(usage::EVENT_FIRST_LAUNCH).await;
+            Ok(())
+        }
+        other => Err(format!("Unknown usage event '{other}'")),
+    }
+}
+
 // Turning reporting on and off deliberately does NOT have its own command. It
 // is an ordinary config field, so it goes through `save_config` like every other
 // setting — one write path, no chance of the two disagreeing about which is

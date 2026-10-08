@@ -27,11 +27,15 @@ pub async fn install_model(
     let progress_cb = move |p: hivebear_registry::download::DownloadProgress| {
         let _ = window.emit("download-progress", &p);
     };
-    state
+    let info = state
         .registry
         .install(&model_id, quant.as_deref(), None, Some(&progress_cb))
         .await
-        .map_err(|e| crate::error::CommandError::from(e).into())
+        .map_err(crate::error::CommandError::from)?;
+    tauri::async_runtime::spawn(hivebear_core::usage::send_usage_event(
+        hivebear_core::usage::EVENT_MODEL_INSTALLED,
+    ));
+    Ok(info)
 }
 
 #[tauri::command]

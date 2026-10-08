@@ -2,7 +2,16 @@ use crate::error::CmdResult;
 use crate::state::AppState;
 use hivebear_core::types::CommunityBenchmarkSummary;
 use hivebear_core::{HardwareFingerprint, HardwareProfile, ModelRecommendation};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
+
+/// Whether background initialisation has finished and `AppState` exists.
+///
+/// The webview listens for the `app-ready` event, but it may subscribe after
+/// the event fired, so it asks this once as well.
+#[tauri::command]
+pub fn app_ready(app: AppHandle) -> bool {
+    app.try_state::<AppState>().is_some()
+}
 
 #[tauri::command]
 pub fn get_hardware_profile(state: State<'_, AppState>) -> CmdResult<HardwareProfile> {

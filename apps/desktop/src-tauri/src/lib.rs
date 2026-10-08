@@ -5,7 +5,7 @@ mod telemetry;
 mod validation;
 
 use state::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing::{error, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before anything that can fail. Config is read directly rather than through
-    // AppState because AppState::init is itself one of the things that fails.
+    // AppState because AppState::init_with_paths is itself one of the things that fails.
     let mut config = hivebear_core::Config::load();
     let _sentry = telemetry::init(&mut config);
 
@@ -35,45 +35,60 @@ pub fn run() {
         .setup(|app| {
             // On mobile, use Tauri's app data dir (Android internal storage).
             // On desktop, use the default ProjectDirs-based paths.
-            let init_result = if cfg!(target_os = "android") || cfg!(target_os = "ios") {
+            let paths = if cfg!(target_os = "android") || cfg!(target_os = "ios") {
                 match app.path().app_data_dir() {
-                    Ok(base) => AppState::init_with_paths(AppState::paths_from_base(base)),
-                    Err(e) => Err(format!("Could not resolve the app data directory.\n\n{e}")),
-                }
-            } else {
-                AppState::init()
-            };
-
-            // Startup used to panic here. That happens inside setup(), before
-            // any window exists, so the process just vanished — no window, no
-            // dialog, nothing an ordinary user could find. Report it somewhere
-            // retrievable and exit deliberately instead.
-            let app_state = match init_result {
-                Ok(state) => state,
-                Err(message) => {
-                    error!("HiveBear could not start: {message}");
-                    eprintln!("HiveBear could not start:\n{message}");
-                    write_startup_failure(&message);
-                    std::process::exit(1);
-                }
-            };
-            // Auto-start mesh if enabled and auto_join is configured
-            {
-                let should_start = {
-                    let config = app_state.config.lock().unwrap_or_else(|e| e.into_inner());
-                    config.mesh.enabled && config.mesh.auto_join
-                };
-                if should_start {
-                    if let Err(e) = app_state.start_mesh() {
-                        warn!("Failed to auto-start mesh (non-fatal): {e}");
+                    Ok(base) => AppState::paths_from_base(base),
+                    Err(e) => {
+                        fail_startup(&format!("Could not resolve the app data directory.\n\n{e}"))
                     }
                 }
-            }
+            } else {
+                hivebear_core::AppPaths::new()
+            };
 
-            app.manage(app_state);
+            // Build the state off the setup thread. Hardware profiling (GPU
+            // enumeration, a disk read test) and opening the registry take
+            // seconds on some machines, and while setup() blocks the window
+            // exists but cannot paint: users saw nothing and clicked again.
+            // Commands that need AppState fail with "state not managed" until
+            // it is in place, so the webview waits for `app-ready` (or polls
+            // `app_ready`) before rendering anything that calls them.
+            let handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("hivebear-init".into())
+                .spawn(move || {
+                    // Startup used to panic here, before any window could
+                    // show it, so the process just vanished. Report it
+                    // somewhere retrievable and exit deliberately instead.
+                    let app_state = match AppState::init_with_paths(paths) {
+                        Ok(state) => state,
+                        Err(message) => fail_startup(&message),
+                    };
+
+                    // Auto-start the mesh only if the user opted in earlier.
+                    // Both flags default to false, so a first launch never
+                    // binds the QUIC socket (and never triggers a firewall
+                    // prompt) before anyone asked for the mesh.
+                    let should_start = {
+                        let config = app_state.config.lock().unwrap_or_else(|e| e.into_inner());
+                        config.mesh.enabled && config.mesh.auto_join
+                    };
+                    if should_start {
+                        if let Err(e) = app_state.start_mesh() {
+                            warn!("Failed to auto-start mesh (non-fatal): {e}");
+                        }
+                    }
+
+                    handle.manage(app_state);
+                    if let Err(e) = handle.emit("app-ready", ()) {
+                        warn!("Could not announce readiness to the webview: {e}");
+                    }
+                })
+                .map_err(|e| format!("Could not start the initialisation thread: {e}"))?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::profile::app_ready,
             commands::profile::get_hardware_profile,
             commands::profile::get_recommendations,
             commands::registry::search_models,
@@ -86,6 +101,7 @@ pub fn run() {
             commands::inference::unload_model,
             commands::inference::list_loaded_models,
             commands::benchmark::run_benchmark,
+            commands::benchmark::run_model_benchmark,
             commands::benchmark::share_benchmark,
             commands::benchmark::get_community_benchmarks,
             commands::config::get_config,
@@ -122,6 +138,7 @@ pub fn run() {
             commands::device::can_contribute_to_mesh,
             commands::telemetry::telemetry_status,
             commands::telemetry::acknowledge_telemetry_notice,
+            commands::telemetry::record_usage_event,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
@@ -130,6 +147,14 @@ pub fn run() {
             write_startup_failure(&e.to_string());
             std::process::exit(1);
         });
+}
+
+/// Log, record and report a fatal startup error, then exit.
+fn fail_startup(message: &str) -> ! {
+    error!("HiveBear could not start: {message}");
+    eprintln!("HiveBear could not start:\n{message}");
+    write_startup_failure(message);
+    std::process::exit(1);
 }
 
 /// Record a startup failure where a user can actually be pointed at it.
