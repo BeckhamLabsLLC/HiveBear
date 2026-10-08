@@ -1,8 +1,12 @@
 # Cross-compilation configuration for HiveBear
 
 # WASM: enable getrandom JS backend (required by candle -> rand -> getrandom 0.3)
+# and SIMD. candle's quantized matmul has simd128 kernels; without the target
+# feature it falls back to scalar code and a 360M model takes minutes to emit
+# its first token in the browser. Every current browser supports wasm SIMD
+# (Chrome 91+, Firefox 89+, Safari 16.4+).
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\"", "-C", "target-feature=+simd128"]
 
 # Raspberry Pi 5 and other ARM64 Linux devices
 [target.aarch64-unknown-linux-gnu]

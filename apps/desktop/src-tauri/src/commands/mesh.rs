@@ -70,24 +70,57 @@ pub struct MeshConnectionStatus {
     pub peer_count: usize,
     /// The node's hex-encoded public key (if running).
     pub node_id: Option<String>,
+    /// Why the last start attempt failed, if it did.
+    pub last_error: Option<String>,
 }
 
 /// Start the mesh node: register with the coordination server and begin heartbeats.
+///
+/// Clicking Join is the opt-in. The mesh is off by default (so a first
+/// launch never binds a socket or raises a firewall prompt), so joining also
+/// turns it on and remembers to rejoin at the next launch.
 #[tauri::command]
 pub fn join_mesh(state: State<'_, AppState>) -> CmdResult<MeshConnectionStatus> {
+    set_mesh_opt_in(&state, true)?;
     state.start_mesh()?;
     get_mesh_connection_status(state)
 }
 
-/// Stop the mesh node: deregister and disconnect.
+/// Stop the mesh node: deregister and disconnect, and stop rejoining at launch.
 #[tauri::command]
 pub async fn leave_mesh(state: State<'_, AppState>) -> CmdResult<()> {
-    state.stop_mesh().await
+    state.stop_mesh().await?;
+    set_mesh_opt_in(&state, false)
+}
+
+/// Persist whether the user wants to be on the mesh.
+///
+/// Leaving keeps `enabled` as it is (that is the Settings switch) and only
+/// clears `auto_join`; joining sets both.
+fn set_mesh_opt_in(state: &AppState, joined: bool) -> CmdResult<()> {
+    let mut config = state
+        .config
+        .lock()
+        .map_err(|_| String::from("Config lock poisoned"))?;
+    let enabled = config.mesh.enabled || joined;
+    if config.mesh.enabled == enabled && config.mesh.auto_join == joined {
+        return Ok(());
+    }
+    config.mesh.enabled = enabled;
+    config.mesh.auto_join = joined;
+    config
+        .save()
+        .map_err(|e| format!("Failed to save config: {e}"))
 }
 
 /// Get the live mesh connection status.
 #[tauri::command]
 pub fn get_mesh_connection_status(state: State<'_, AppState>) -> CmdResult<MeshConnectionStatus> {
+    let last_error = state
+        .mesh_error
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let node = state.mesh_node.lock().unwrap_or_else(|e| e.into_inner());
     match node.as_ref() {
         Some(n) => Ok(MeshConnectionStatus {
@@ -95,12 +128,14 @@ pub fn get_mesh_connection_status(state: State<'_, AppState>) -> CmdResult<MeshC
             registered: n.is_registered(),
             peer_count: n.peer_count(),
             node_id: Some(n.local_id.to_hex()),
+            last_error,
         }),
         None => Ok(MeshConnectionStatus {
             running: false,
             registered: false,
             peer_count: 0,
             node_id: None,
+            last_error,
         }),
     }
 }

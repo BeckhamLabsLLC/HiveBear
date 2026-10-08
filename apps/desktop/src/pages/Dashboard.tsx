@@ -1,10 +1,14 @@
 import { useProfile, useRecommendations } from "../hooks/useProfile";
 import { useLoadedModels, useModelLoader } from "../hooks/useInference";
+import { useEffect } from "react";
 import { useInstalledModels, useModelInstall } from "../hooks/useRegistry";
 import ResourceGauge from "../components/ResourceGauge";
 import MeshStatusPill from "../components/MeshStatusPill";
+import DownloadProgress from "../components/DownloadProgress";
 import { Card, Button, Badge, Surface, EmptyState } from "../components/ui";
-import { formatBytes, formatToksPerSec } from "../types";
+import { formatBytes, formatDownloadSize, formatQuant, formatToksPerSec } from "../types";
+import { firstModel } from "../lib/firstModel";
+import { onInstallRequest, takePendingInstall } from "../lib/pendingInstall";
 import {
   Cpu, HardDrive, MemoryStick, Monitor, Download, MessageSquare,
   Loader, Zap, Users, ArrowRight,
@@ -17,18 +21,33 @@ export default function Dashboard() {
   const { models: loadedModels } = useLoadedModels();
   const { models: installedModels, refresh: refreshInstalled } = useInstalledModels();
   const { loading: modelLoading, load } = useModelLoader();
-  const { installing, install } = useModelInstall();
+  const { installing, progress, install } = useModelInstall();
   const navigate = useNavigate();
 
   const hasModels = installedModels.length > 0;
   const hasLoaded = loadedModels.length > 0;
-  const topRec = recommendations[0] ?? null;
+  // Never an empty first-run card: fall back to a tiny model if the
+  // recommender found nothing.
+  const { model: topRec, isFallback } = firstModel(recommendations);
+  const topRecSize = formatDownloadSize(topRec.estimated_download_bytes);
 
   const handleInstallTop = async () => {
-    if (!topRec || installing) return;
-    const result = await install(topRec.model_id, topRec.quantization);
+    if (installing) return;
+    const result = await install(topRec.model_id, formatQuant(topRec.quantization));
     if (result) refreshInstalled();
   };
+
+  // An install started from the welcome screen, which cannot show progress.
+  useEffect(() => {
+    const run = async () => {
+      const req = takePendingInstall();
+      if (!req) return;
+      const result = await install(req.modelId, req.quant);
+      if (result) refreshInstalled();
+    };
+    void run();
+    return onInstallRequest(() => { void run(); });
+  }, [install, refreshInstalled]);
 
   const handleLoadAndChat = async (modelId: string) => {
     const result = await load(modelId);
@@ -66,7 +85,10 @@ export default function Dashboard() {
 
         {/* ── Zone 1: Hero / Status ─────────────────────────────────────── */}
 
-        {!hasModels && !recsLoading && topRec ? (
+        {installing ? (
+          /* A download is running — show it, whichever button started it */
+          <DownloadProgress modelId={installing} progress={progress} />
+        ) : !hasModels && !recsLoading ? (
           /* First-run: no models installed */
           <Card padding="lg" className="border-paw-500/20 bg-gradient-to-br from-paw-500/5 to-paw-600/10">
             <div className="flex items-start gap-4">
@@ -76,17 +98,21 @@ export default function Dashboard() {
               <div className="flex-1">
                 <h2 className="text-lg font-semibold">Get Started</h2>
                 <p className="mt-1 text-sm text-text-secondary">
-                  HiveBear analyzed your hardware and found the perfect model.
-                  One click to install and start chatting.
+                  {isFallback
+                    ? "Start with a small, fast model that runs on almost any machine. You can add bigger ones from the Model Browser."
+                    : "HiveBear analyzed your hardware and picked a model that runs well here. One click to install and start chatting."}
                 </p>
-                <div className="mt-4 flex items-center gap-4">
+                <div className="mt-4 flex flex-wrap items-center gap-4">
                   <Button onClick={handleInstallTop} disabled={!!installing}>
-                    {installing ? <Loader size={16} className="animate-spin" /> : <Download size={16} />}
-                    Install {topRec.model_name} ({topRec.quantization})
+                    <Download size={16} />
+                    Install {topRec.model_name} ({formatQuant(topRec.quantization)}
+                    {topRecSize ? `, ${topRecSize}` : ""})
                   </Button>
                   <span className="text-xs text-text-muted">
-                    {formatBytes(topRec.estimated_memory_usage_bytes)} ·{" "}
-                    {formatToksPerSec(topRec.estimated_tokens_per_sec)}
+                    {topRecSize ? `${topRecSize} download · ` : ""}
+                    {formatBytes(topRec.estimated_memory_usage_bytes)} RAM
+                    {topRec.estimated_tokens_per_sec > 0 &&
+                      ` · ${formatToksPerSec(topRec.estimated_tokens_per_sec)}`}
                   </span>
                 </div>
               </div>
@@ -219,11 +245,16 @@ export default function Dashboard() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{rec.model_name}</span>
-                      <Badge variant="default">{rec.quantization}</Badge>
+                      <Badge variant="default">{formatQuant(rec.quantization)}</Badge>
                     </div>
                     <div className="flex items-center gap-3 text-xs">
-                      <span className="text-text-secondary">
-                        {formatBytes(rec.estimated_memory_usage_bytes)}
+                      {formatDownloadSize(rec.estimated_download_bytes) && (
+                        <span className="text-text-secondary" title="Download size">
+                          {formatDownloadSize(rec.estimated_download_bytes)}
+                        </span>
+                      )}
+                      <span className="text-text-muted" title="Memory while running">
+                        {formatBytes(rec.estimated_memory_usage_bytes)} RAM
                       </span>
                       <span className={
                         rec.estimated_tokens_per_sec >= 20 ? "text-success"

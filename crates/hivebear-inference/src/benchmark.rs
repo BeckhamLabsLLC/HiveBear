@@ -1,10 +1,17 @@
 use futures::StreamExt;
+use std::path::Path;
 use std::time::Instant;
 
 use crate::error::Result;
-use crate::types::{ChatMessage, GenerateRequest, ModelHandle, SamplingParams};
+use crate::types::{
+    ChatMessage, GenerateRequest, LoadConfig, ModelHandle, OffloadConfig, SamplingParams,
+};
 use crate::Orchestrator;
 use hivebear_core::types::BenchmarkResult;
+
+/// Context length every real benchmark loads with, so results are comparable
+/// on the leaderboard. Also what gets reported as `context_length`.
+pub const BENCHMARK_CONTEXT_LENGTH: u32 = 4096;
 
 /// Configuration for an inference benchmark run.
 #[derive(Debug, Clone)]
@@ -39,6 +46,53 @@ fn prefill_prompt(target_tokens: u32) -> String {
                 between hardware and software optimization techniques. ";
     let repetitions = (target_tokens as usize * 4) / base.len() + 1;
     base.repeat(repetitions)
+}
+
+/// A finished end-to-end benchmark of one model file.
+#[derive(Debug, Clone)]
+pub struct ModelBenchmark {
+    pub result: BenchmarkResult,
+    /// The engine that actually ran it, e.g. "llama.cpp".
+    pub engine: String,
+    /// Quantization read from the filename, if recognisable.
+    pub quantization: Option<String>,
+    pub context_length: u32,
+}
+
+/// Load a model file, benchmark it, and unload it again.
+///
+/// This is the path both `hivebear benchmark --model` and the desktop
+/// Benchmark page use, so a result from either is measured the same way and
+/// can sit on the same leaderboard. The model is always unloaded, including
+/// when the run fails.
+pub async fn benchmark_model_file(
+    orchestrator: &Orchestrator,
+    model_path: &Path,
+    model_id: &str,
+    config: &BenchmarkConfig,
+) -> Result<ModelBenchmark> {
+    let load_config = LoadConfig {
+        context_length: BENCHMARK_CONTEXT_LENGTH,
+        offload: OffloadConfig {
+            auto: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let handle = orchestrator.load(model_path, &load_config).await?;
+    let outcome = run_inference_benchmark(orchestrator, &handle, model_id, config).await;
+
+    if let Err(e) = orchestrator.unload(&handle).await {
+        tracing::warn!("Failed to unload benchmarked model: {e}");
+    }
+
+    Ok(ModelBenchmark {
+        result: outcome?,
+        engine: handle.engine.to_string(),
+        quantization: hivebear_core::benchmark::detect_quantization(model_path),
+        context_length: BENCHMARK_CONTEXT_LENGTH,
+    })
 }
 
 /// Run a real inference benchmark using the orchestrator and a loaded model.

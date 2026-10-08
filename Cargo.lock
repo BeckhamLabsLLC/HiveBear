@@ -2764,7 +2764,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hivebear-cli"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -2797,13 +2797,14 @@ dependencies = [
 
 [[package]]
 name = "hivebear-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "directories",
  "getrandom 0.2.17",
  "js-sys",
  "keyring",
  "pretty_assertions",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -2820,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "hivebear-desktop"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ed25519-dalek",
  "futures",
@@ -2847,7 +2848,7 @@ dependencies = [
 
 [[package]]
 name = "hivebear-inference"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2878,7 +2879,7 @@ dependencies = [
 
 [[package]]
 name = "hivebear-mesh"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "bincode",
@@ -2912,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "hivebear-persistence"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -2925,7 +2926,7 @@ dependencies = [
 
 [[package]]
 name = "hivebear-registry"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "chrono",
  "futures",
@@ -2945,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "hivebear-web"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "console_error_panic_hook",
  "futures",

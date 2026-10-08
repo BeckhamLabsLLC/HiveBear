@@ -94,12 +94,13 @@ enum Commands {
         #[arg(long, default_value = "3")]
         iterations: u32,
 
-        /// Share benchmark results with the community (anonymized)
+        /// Share the result to the community leaderboard without asking
+        /// (anonymous unless you are logged in)
         #[arg(long)]
         share: bool,
 
-        /// Don't share results even if config enables it
-        #[arg(long)]
+        /// Don't share the result or ask, even if config enables sharing
+        #[arg(long, conflicts_with = "share")]
         no_share: bool,
     },
 
@@ -874,47 +875,59 @@ async fn fetch_community_data(
     }
 }
 
-/// Share a benchmark result with the community (best-effort, never blocks).
+/// Share a real benchmark result to the community leaderboard.
+///
+/// Anonymous unless the user is logged in. Success and failure are both
+/// printed: this used to report failures only at debug level, so a rejected
+/// submission looked exactly like a successful one.
 async fn share_benchmark_result(
     config: &Config,
-    result: &hivebear_core::BenchmarkResult,
+    bench: &hivebear_inference::benchmark::ModelBenchmark,
     hw: &hivebear_core::HardwareProfile,
     model_id: &str,
-    engine: &str,
 ) {
-    let fp = hivebear_core::HardwareFingerprint::from_profile(hw);
-    let submission = hivebear_core::CommunityBenchmarkSubmission {
-        hardware_fingerprint: fp,
-        model_id: model_id.to_string(),
-        quantization: "auto".to_string(), // CLI doesn't currently expose quant info at benchmark time
-        engine: engine.to_string(),
-        context_length: 4096,
-        benchmark_type: result.benchmark_type.clone(),
-        tokens_per_sec: result.tokens_per_sec,
-        time_to_first_token_ms: Some(result.time_to_first_token_ms),
-        prompt_eval_tokens_per_sec: result.prompt_eval_tokens_per_sec,
-        peak_memory_bytes: result.peak_memory_bytes,
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-    };
+    use hivebear_core::benchmark::submit;
 
-    let url = format!("{}/benchmarks", config.mesh.coordination_server);
-    let client = http_client();
+    let submission = submit::build_submission(
+        &bench.result,
+        hw,
+        model_id,
+        bench.quantization.as_deref().unwrap_or("unknown"),
+        &bench.engine,
+        bench.context_length,
+    );
 
-    let mut req = client.post(&url).json(&submission);
-    if let Some(ref token) = config.account.jwt_token {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            println!("  {}", "Benchmark shared with community.".dimmed());
-        }
-        Ok(resp) => {
-            tracing::debug!("Benchmark share returned {}", resp.status());
+    match submit::submit_benchmark(config, &submission).await {
+        Ok(()) => {
+            println!(
+                "  {} See it at {}",
+                "Shared!".green().bold(),
+                submit::LEADERBOARD_URL.underline()
+            );
         }
         Err(e) => {
-            tracing::debug!("Failed to share benchmark: {e}");
+            eprintln!("  {}: {e}", "Could not share benchmark".red().bold());
         }
+    }
+}
+
+/// Ask a yes/no question on the terminal. `default` is used for an empty
+/// answer or when stdin cannot be read.
+fn prompt_yes_no(question: &str, default: bool) -> bool {
+    use std::io::Write;
+
+    let hint = if default { "[Y/n]" } else { "[y/N]" };
+    print!("{question} {hint} ");
+    std::io::stdout().flush().ok();
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return default;
+    }
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "" => default,
+        "y" | "yes" => true,
+        _ => false,
     }
 }
 
@@ -1090,31 +1103,7 @@ async fn cmd_benchmark(
 
         let hw = hivebear_core::profile();
         let model_path_str = registry_commands::resolve_model(&model_id, &hw).await;
-        let orchestrator = create_orchestrator(hw);
-
-        let load_config = hivebear_inference::LoadConfig {
-            context_length: 4096,
-            offload: hivebear_inference::OffloadConfig {
-                auto: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        println!("Loading model: {}", model_id.bold());
-        let handle = match orchestrator
-            .load(Path::new(&model_path_str), &load_config)
-            .await
-        {
-            Ok(h) => {
-                println!("{}", format!("  Engine: {}", h.engine).dimmed());
-                h
-            }
-            Err(e) => {
-                eprintln!("{}: {e}", "Failed to load model".red().bold());
-                return;
-            }
-        };
+        let orchestrator = create_orchestrator(hw.clone());
 
         let bench_config = hivebear_inference::benchmark::BenchmarkConfig {
             prefill_tokens: 128,
@@ -1123,7 +1112,7 @@ async fn cmd_benchmark(
             iterations,
         };
 
-        println!();
+        println!("Loading model: {}", model_id.bold());
         println!(
             "Config: {} prefill tokens, {} generate tokens, {} warmup, {} iteration(s)",
             bench_config.prefill_tokens,
@@ -1133,17 +1122,34 @@ async fn cmd_benchmark(
         );
         println!();
 
-        match hivebear_inference::benchmark::run_inference_benchmark(
+        // A model given as a file path would otherwise be submitted as that
+        // path, which carries the user's home directory onto a public page.
+        let leaderboard_id = if Path::new(&model_id).exists() {
+            Path::new(&model_id)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| model_id.clone())
+        } else {
+            model_id.clone()
+        };
+
+        match hivebear_inference::benchmark::benchmark_model_file(
             &orchestrator,
-            &handle,
-            &model_id,
+            Path::new(&model_path_str),
+            &leaderboard_id,
             &bench_config,
         )
         .await
         {
-            Ok(result) => {
+            Ok(bench) => {
+                let result = &bench.result;
                 println!("{}", "Results".bold().cyan());
                 println!("  Model:            {}", result.model_used);
+                println!("  Engine:           {}", bench.engine);
+                println!(
+                    "  Quantization:     {}",
+                    bench.quantization.as_deref().unwrap_or("unknown")
+                );
                 println!(
                     "  Type:             {}",
                     result.benchmark_type.bold().green()
@@ -1164,35 +1170,48 @@ async fn cmd_benchmark(
                         hivebear_core::types::format_bytes(result.peak_memory_bytes)
                     );
                 }
+                println!();
 
-                // Community sharing
-                let config = Config::load();
-                let should_share = share || (config.share_benchmarks && !no_share);
-                if should_share && config.account.jwt_token.is_some() {
-                    let hw = hivebear_core::profile();
-                    share_benchmark_result(
-                        &config,
-                        &result,
-                        &hw,
-                        &model_id,
-                        &handle.engine.to_string(),
-                    )
-                    .await;
-                } else if !should_share && !config.share_benchmarks {
+                // Community sharing. Consent is explicit: a flag, the config
+                // setting, or a yes at the prompt. Without a terminal to ask
+                // on, nothing is shared unless the user already opted in.
+                let mut config = Config::load();
+                let should_share = if no_share {
+                    false
+                } else if share || config.share_benchmarks {
+                    true
+                } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    let yes = prompt_yes_no(
+                        "Share this result anonymously to the community leaderboard at hivebear.com/benchmarks?",
+                        true,
+                    );
+                    if yes && prompt_yes_no("Always share benchmark results?", false) {
+                        config.share_benchmarks = true;
+                        match config.save() {
+                            Ok(()) => println!(
+                                "  {}",
+                                "Saved. Turn off with 'share_benchmarks = false' in config."
+                                    .dimmed()
+                            ),
+                            Err(e) => eprintln!("  {}: {e}", "Could not save config".yellow()),
+                        }
+                    }
+                    yes
+                } else {
                     println!(
                         "  {}",
-                        "Tip: Set 'share_benchmarks = true' in config to help the community."
-                            .dimmed()
+                        "Tip: add --share to put this result on hivebear.com/benchmarks.".dimmed()
                     );
+                    false
+                };
+
+                if should_share {
+                    share_benchmark_result(&config, &bench, &hw, &leaderboard_id).await;
                 }
             }
             Err(e) => {
                 eprintln!("{}: {e}", "Benchmark failed".red().bold());
             }
-        }
-
-        if let Err(e) = orchestrator.unload(&handle).await {
-            tracing::warn!("Failed to unload model: {e}");
         }
     } else {
         // Synthetic benchmark (fallback)
@@ -1420,11 +1439,13 @@ async fn cmd_run(
 
         match orchestrator.stream(&handle, &req) {
             Ok(mut stream) => {
+                let mut got_tokens = false;
                 while let Some(result) = stream.next().await {
                     match result {
                         Ok(token) => {
                             print!("{}", token.text);
                             std::io::stdout().flush().ok();
+                            got_tokens = true;
                         }
                         Err(e) => {
                             eprintln!("\n{}: {e}", "Generation error".red());
@@ -1433,6 +1454,14 @@ async fn cmd_run(
                     }
                 }
                 println!();
+                if got_tokens {
+                    // Awaited, not spawned: the process exits right after this.
+                    // Once per install, with a 3s cap, and a no-op if opted out.
+                    hivebear_core::usage::send_usage_event_once(
+                        hivebear_core::usage::EVENT_FIRST_INFERENCE,
+                    )
+                    .await;
+                }
             }
             Err(e) => {
                 eprintln!("{}: {e}", "Stream error".red());
@@ -1444,6 +1473,7 @@ async fn cmd_run(
         println!();
 
         let mut history: Vec<ChatMessage> = Vec::new();
+        let mut reported_first_inference = false;
 
         loop {
             print!("{} ", ">".bold().cyan());
@@ -1497,6 +1527,13 @@ async fn cmd_run(
                     eprintln!("{}: {e}", "Stream error".red());
                     continue;
                 }
+            }
+
+            if !reported_first_inference && !response_text.is_empty() {
+                reported_first_inference = true;
+                tokio::spawn(hivebear_core::usage::send_usage_event_once(
+                    hivebear_core::usage::EVENT_FIRST_INFERENCE,
+                ));
             }
 
             history.push(ChatMessage::assistant(response_text));

@@ -3,7 +3,8 @@ import * as Sentry from "@sentry/react";
 import { notify } from "../components/Toast";
 import type {
   BenchmarkResult, ChatMessage, Config, Conversation, HardwareProfile, InstalledInfo,
-  LoadedModel, MeshConfig, MeshStatus, ModelInfo, ModelMetadata, ModelRecommendation,
+  LoadedModel, MeshConfig, MeshStatus, ModelBenchmarkResult, ModelInfo, ModelMetadata,
+  ModelRecommendation,
   PersistedMessage, SearchResult, StorageReport,
 } from "../types";
 
@@ -112,6 +113,16 @@ function invoke<T>(command: string, args?: Record<string, unknown>, opts?: Invok
   });
 }
 
+// ── Startup ────────────────────────────────────────────────────────
+
+/**
+ * Whether the backend has finished initialising (hardware profile, registry,
+ * chat database). Commands that need that state reject until it has.
+ */
+export function appReady(): Promise<boolean> {
+  return invoke("app_ready", undefined, { silent: true });
+}
+
 // ── Profile ────────────────────────────────────────────────────────
 
 export function getHardwareProfile(): Promise<HardwareProfile> {
@@ -164,8 +175,29 @@ export function listLoadedModels(): Promise<ModelInfo[]> {
 
 // ── Benchmark ──────────────────────────────────────────────────────
 
+/** Synthetic CPU estimate. Not a model benchmark, and never shareable. */
 export function runBenchmark(durationSecs?: number): Promise<BenchmarkResult | null> {
   return invoke("run_benchmark", { durationSecs });
+}
+
+/** Load an installed model, benchmark it for real, and unload it. */
+export function runModelBenchmark(modelId: string): Promise<ModelBenchmarkResult> {
+  return invoke("run_model_benchmark", { modelId }, { label: "Benchmark failed" });
+}
+
+/** Share a real benchmark to the community leaderboard (anonymous unless signed in). */
+export function shareBenchmark(bench: ModelBenchmarkResult): Promise<boolean> {
+  return invoke(
+    "share_benchmark",
+    {
+      result: bench.result,
+      modelId: bench.model_id,
+      quantization: bench.quantization,
+      engine: bench.engine,
+      contextLength: bench.context_length,
+    },
+    { label: "Couldn't share" },
+  );
 }
 
 // ── Config ─────────────────────────────────────────────────────────
@@ -198,6 +230,8 @@ export interface MeshConnectionStatus {
   registered: boolean;
   peer_count: number;
   node_id: string | null;
+  /** Why the last background start failed (port in use, coordinator down…). */
+  last_error: string | null;
 }
 
 export function joinMesh(): Promise<MeshConnectionStatus> {

@@ -86,6 +86,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      # rust-toolchain.toml pins the toolchain cargo actually uses, so the
+      # target the action installed for stable is not the one that matters.
+      - name: Add wasm32 target to the pinned toolchain
+        run: rustup target add wasm32-unknown-unknown
+
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -101,8 +106,13 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack@0.13.1 --locked --force
 
+      # Same command as release.yml's build-wasm, so the asset the website's
+      # playground downloads cannot rot unnoticed between tags.
       - name: Build WASM crate
-        run: cd web && wasm-pack build --target web
+        run: |
+          set -euo pipefail
+          wasm-pack build web --target web --release --out-name hivebear_web
+          ls -l web/pkg/hivebear_web.js web/pkg/hivebear_web_bg.wasm
 
   arm-cross:
     name: ARM Cross-Compile Check

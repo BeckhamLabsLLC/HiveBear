@@ -5,6 +5,38 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-10-08
+
+Getting from the website to a first answer, and sharing a benchmark, now
+actually works.
+
+### Added
+- Real benchmarks in the desktop app on an installed model, with a "Share to
+  leaderboard" button. Results are anonymous by default and show up on
+  https://hivebear.com/benchmarks.
+- `hivebear benchmark --model <id>` asks whether to share anonymously and says
+  what happened; `--no-share` skips the question.
+- First-run install: the welcome screen recommends a model that fits, shows its
+  download size, and installs it with a progress bar.
+- Opt-in anonymous usage counts (first launch, first chat, benchmark shared),
+  toggle in Settings. No prompts, no content, no IP.
+- Intel Mac desktop build, ad-hoc signed macOS apps, `install.sh --desktop`,
+  and a Windows PowerShell installer (`irm https://hivebear.com/install.ps1 | iex`).
+- The in-browser engine streams tokens and runs with WASM SIMD.
+
+### Fixed
+- In-app updates: the updater permissions were missing, so no install could
+  update itself. **Upgrading from 0.1.8 or earlier needs one manual reinstall.**
+- Linux builds target glibc 2.35 (Ubuntu 22.04, Debian 12) and no longer need
+  libgomp.
+- The in-browser engine crashed on its first token.
+- CPU usage in benchmark results showed 100x too high.
+- The account token is only ever sent over HTTPS (or to localhost).
+
+### Changed
+- The mesh is off until you join it, so first launch no longer triggers a
+  firewall prompt. Existing configs keep their setting.
+
 ## [0.1.8] - 2026-09-21
 
 A node can now register with the coordinator. None ever could before, so the

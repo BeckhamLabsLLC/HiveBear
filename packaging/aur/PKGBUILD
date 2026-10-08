@@ -1,21 +1,20 @@
 # Maintainer: BeckhamLabs <hello@beckhamlabs.com>
 pkgname=hivebear-bin
-pkgver=0.1.3
+pkgver=0.1.9
 pkgrel=1
-pkgdesc="AI that fits your machine — run LLMs on any device regardless of GPU"
+pkgdesc="Run local AI models, with picks matched to your hardware"
 arch=('x86_64' 'aarch64')
-url="https://github.com/BeckhamLabsLLC/HiveBear"
+url="https://hivebear.com"
 license=('MIT')
 provides=('hivebear')
 conflicts=('hivebear')
 
-source_x86_64=("${url}/releases/download/v${pkgver}/hivebear-x86_64-unknown-linux-gnu.tar.gz")
-source_aarch64=("${url}/releases/download/v${pkgver}/hivebear-aarch64-unknown-linux-gnu.tar.gz")
+source_x86_64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${pkgver}/hivebear-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${pkgver}/hivebear-aarch64-unknown-linux-gnu.tar.gz")
 
-sha256sums_x86_64=('PLACEHOLDER_X86_64_LINUX_SHA256')
-sha256sums_aarch64=('PLACEHOLDER_AARCH64_LINUX_SHA256')
+sha256sums_x86_64=('0a13a8cd0f89bd5d182ce47ab89f5259647976fe248fcf654518bfe2e54d49af')
+sha256sums_aarch64=('13069fba9a56d412ea4a2a970cfe5746bc1b4d1fc70bc5d9e8d5370ef5657eb7')
 
 package() {
     install -Dm755 hivebear "${pkgdir}/usr/bin/hivebear"
-    install -Dm644 /dev/null "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

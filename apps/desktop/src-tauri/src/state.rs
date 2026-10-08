@@ -17,19 +17,23 @@ pub struct AppState {
     pub paths: AppPaths,
     pub http_client: reqwest::Client,
     pub mesh_node: Mutex<Option<Arc<MeshNode>>>,
+    /// Why the last background mesh start failed, if it did. The start runs
+    /// detached, so without this a failed bind or registration was only a
+    /// log line and the UI could not say why the node never came up.
+    pub mesh_error: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
-    pub fn init() -> Result<Self, String> {
-        Self::init_with_paths(AppPaths::new())
-    }
-
-    /// Initialize with explicit paths — used on Android where the default
-    /// `ProjectDirs` paths point to read-only locations.
+    /// Initialize with explicit paths. Desktop passes `AppPaths::new()`;
+    /// Android passes its app data directory, because the default
+    /// `ProjectDirs` paths point to read-only locations there.
+    ///
+    /// Runs on a background thread (see `lib.rs`), since hardware profiling
+    /// and opening the registry can take seconds.
     ///
     /// Returns an error rather than panicking. These three steps all touch the
-    /// filesystem, and they run inside `Builder::setup` before any window
-    /// exists — so a panic here produced a process that died with no window,
+    /// filesystem, and when they ran inside `Builder::setup`, before any window
+    /// existed, a panic here produced a process that died with no window,
     /// no dialog, and no log an ordinary user could find. That is the classic
     /// "I double-clicked it and nothing happened" report. The caller is
     /// responsible for showing the message.
@@ -89,6 +93,7 @@ impl AppState {
             paths,
             http_client: reqwest::Client::new(),
             mesh_node: Mutex::new(None),
+            mesh_error: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -172,13 +177,18 @@ impl AppState {
         // task it starts is itself inside the runtime, so the maintenance
         // loop this kicks off can spawn freely.
         let mesh = Arc::clone(&node);
+        let mesh_error = Arc::clone(&self.mesh_error);
+        *mesh_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
         tauri::async_runtime::spawn(async move {
             match mesh.start(listen_addr, local_info).await {
                 Ok(()) => {
                     mesh.start_maintenance();
                     info!("Mesh node {} running in background", mesh.local_id);
                 }
-                Err(e) => warn!("Background mesh start failed (non-fatal): {e}"),
+                Err(e) => {
+                    warn!("Background mesh start failed (non-fatal): {e}");
+                    *mesh_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.to_string());
+                }
             }
         });
         info!("Mesh node starting in background");

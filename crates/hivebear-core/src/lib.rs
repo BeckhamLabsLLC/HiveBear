@@ -10,6 +10,8 @@ pub mod recommender;
 pub mod secrets;
 pub mod telemetry;
 pub mod types;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod usage;
 
 // Re-export key types for convenience
 #[cfg(not(target_arch = "wasm32"))]

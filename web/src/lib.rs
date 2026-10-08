@@ -47,6 +47,19 @@ pub async fn init() -> Result<JsValue, JsValue> {
     serde_wasm_bindgen::to_value(&profile).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Set up the inference backend without profiling hardware. For Web Workers:
+/// the profiler reads `window`, which doesn't exist there. Profile on the page
+/// with `init()`, then run the model in a worker that calls this.
+#[wasm_bindgen]
+#[cfg(target_arch = "wasm32")]
+pub fn init_backend() {
+    console_error_panic_hook::set_once();
+    let mut backend = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
+    if backend.is_none() {
+        *backend = Some(CandleWasmBackend::new());
+    }
+}
+
 #[wasm_bindgen]
 #[cfg(target_arch = "wasm32")]
 pub async fn get_hardware_profile() -> Result<JsValue, JsValue> {
@@ -147,8 +160,6 @@ pub async fn stream_generate(
     max_tokens: u32,
     on_token: &js_sys::Function,
 ) -> Result<String, JsValue> {
-    use futures::StreamExt;
-
     let backend_guard = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
     let backend = backend_guard
         .as_ref()
@@ -171,23 +182,13 @@ pub async fn stream_generate(
         ..Default::default()
     };
 
-    let mut stream = backend.stream(handle, &req);
-    let mut full_text = String::new();
-
-    while let Some(result) = stream.next().await {
-        let token_result: Result<Token, InferenceError> = result;
-        match token_result {
-            Ok(token) => {
-                full_text.push_str(&token.text);
-                let _ = on_token.call1(&JsValue::NULL, &JsValue::from_str(&token.text));
-            }
-            Err(e) => {
-                return Err(err_to_js(e));
-            }
-        }
-    }
-
-    Ok(full_text)
+    // Tokens go to JS as they are sampled. Run this in a Web Worker: it's
+    // synchronous, so on the main thread it freezes the page until done.
+    backend
+        .generate_streaming(handle, &req, &mut |text| {
+            let _ = on_token.call1(&JsValue::NULL, &JsValue::from_str(text));
+        })
+        .map_err(err_to_js)
 }
 
 #[wasm_bindgen]
