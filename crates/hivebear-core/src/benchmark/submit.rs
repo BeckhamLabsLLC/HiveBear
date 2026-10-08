@@ -100,7 +100,14 @@ pub async fn submit_benchmark(
 
     let mut req = client.post(&url).json(&submission);
     if let Some(token) = config.account.jwt_token.as_deref() {
-        req = req.bearer_auth(token);
+        if may_send_token(&url) {
+            req = req.bearer_auth(token);
+        } else {
+            // Still submitted, just anonymously.
+            tracing::warn!(
+                "Not sending account token to {server}: it is not HTTPS. Submitting anonymously."
+            );
+        }
     }
 
     let resp = req.send().await.map_err(|source| SubmitError::Network {
@@ -122,9 +129,38 @@ pub async fn submit_benchmark(
     Ok(())
 }
 
+/// Whether the account token may be attached to a request to `url`.
+///
+/// Only over HTTPS, or plain HTTP to the local machine for development. A
+/// misconfigured or hostile `coordination_server` must not receive the
+/// user's JWT in cleartext.
+fn may_send_token(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_only_goes_over_https_or_to_localhost() {
+        assert!(may_send_token("https://mesh.hivebear.com/benchmarks"));
+        assert!(may_send_token("http://localhost:7879/benchmarks"));
+        assert!(may_send_token("http://127.0.0.1:7879/benchmarks"));
+        assert!(may_send_token("http://[::1]:7879/benchmarks"));
+        assert!(!may_send_token("http://mesh.hivebear.com/benchmarks"));
+        assert!(!may_send_token("http://localhost.evil.example/benchmarks"));
+        assert!(!may_send_token("http://10.0.0.5:7879/benchmarks"));
+        assert!(!may_send_token("ftp://mesh.hivebear.com/benchmarks"));
+        assert!(!may_send_token("not a url"));
+    }
 
     #[test]
     fn rejected_error_includes_body_only_when_present() {
