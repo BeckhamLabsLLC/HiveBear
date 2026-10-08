@@ -1,5 +1,12 @@
 #!/bin/bash
-# Regenerate packaging/homebrew/hivebear.rb from a published release.
+# Regenerate the package-manager files from a published release:
+#   packaging/homebrew/hivebear.rb   (tap: BeckhamLabsLLC/homebrew-hivebear, Formula/hivebear.rb)
+#   packaging/scoop/hivebear.json    (bucket: BeckhamLabsLLC/scoop-hivebear, bucket/hivebear.json)
+#   packaging/aur/PKGBUILD
+#
+# release.yml runs this on every stable tag and pushes the first two to the tap
+# and bucket repos. Run it by hand when that job was skipped (no
+# TAP_GITHUB_TOKEN) and copy the files over.
 #
 # The formula shipped with PLACEHOLDER_* checksums for four releases, which meant
 # `brew install` could never have worked — the version being stale was the more
@@ -9,12 +16,16 @@
 # Usage:
 #   scripts/update-homebrew-formula.sh            # uses the workspace version
 #   scripts/update-homebrew-formula.sh v0.1.7     # or an explicit tag
+#   SHA256SUMS_FILE=path/SHA256SUMS.txt scripts/update-homebrew-formula.sh v0.1.7
+#                                                 # use a local copy, no gh needed
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 FORMULA="packaging/homebrew/hivebear.rb"
+SCOOP="packaging/scoop/hivebear.json"
+PKGBUILD="packaging/aur/PKGBUILD"
 
 if [[ $# -ge 1 ]]; then
     TAG="$1"
@@ -24,15 +35,18 @@ else
 fi
 VERSION="${TAG#v}"
 
-command -v gh >/dev/null || { echo "gh CLI is required" >&2; exit 1; }
+if [[ -n "${SHA256SUMS_FILE:-}" ]]; then
+    sums="$SHA256SUMS_FILE"
+else
+    command -v gh >/dev/null || { echo "gh CLI is required" >&2; exit 1; }
 
-workdir="$(mktemp -d)"
-trap 'rm -rf "$workdir"' EXIT
+    workdir="$(mktemp -d)"
+    trap 'rm -rf "$workdir"' EXIT
 
-echo "Fetching checksums for ${TAG}"
-gh release download "$TAG" --pattern "SHA256SUMS.txt" --dir "$workdir" --clobber
-
-sums="$workdir/SHA256SUMS.txt"
+    echo "Fetching checksums for ${TAG}"
+    gh release download "$TAG" --repo BeckhamLabsLLC/HiveBear --pattern "SHA256SUMS.txt" --dir "$workdir" --clobber
+    sums="$workdir/SHA256SUMS.txt"
+fi
 
 # Look up one artifact's checksum, failing loudly rather than writing a
 # placeholder — a wrong or missing sha256 makes `brew install` fail for everyone.
@@ -50,11 +64,14 @@ ARM_MAC="$(lookup hivebear-aarch64-apple-darwin.tar.gz)"
 X86_MAC="$(lookup hivebear-x86_64-apple-darwin.tar.gz)"
 ARM_LINUX="$(lookup hivebear-aarch64-unknown-linux-gnu.tar.gz)"
 X86_LINUX="$(lookup hivebear-x86_64-unknown-linux-gnu.tar.gz)"
+X86_WINDOWS="$(lookup hivebear-x86_64-pc-windows-msvc.zip)"
+
+mkdir -p "$(dirname "$FORMULA")" "$(dirname "$SCOOP")" "$(dirname "$PKGBUILD")"
 
 cat > "$FORMULA" <<EOF
 class Hivebear < Formula
-  desc "AI that fits your machine — run LLMs on any device regardless of GPU"
-  homepage "https://github.com/BeckhamLabsLLC/HiveBear"
+  desc "Run local AI models, with picks matched to your hardware"
+  homepage "https://hivebear.com"
   version "${VERSION}"
   license "MIT"
 
@@ -99,4 +116,58 @@ class Hivebear < Formula
 end
 EOF
 
-echo "Updated ${FORMULA} to ${VERSION}"
+# Scoop's autoupdate block lets `scoop` users (and Scoop's own excavator) pick
+# up a release even if this file falls behind.
+cat > "$SCOOP" <<EOF
+{
+    "version": "${VERSION}",
+    "description": "Run local AI models, with picks matched to your hardware",
+    "homepage": "https://hivebear.com",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${VERSION}/hivebear-x86_64-pc-windows-msvc.zip",
+            "hash": "${X86_WINDOWS}"
+        }
+    },
+    "bin": "hivebear.exe",
+    "checkver": {
+        "github": "https://github.com/BeckhamLabsLLC/HiveBear"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v\$version/hivebear-x86_64-pc-windows-msvc.zip"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v\$version/SHA256SUMS.txt"
+        }
+    }
+}
+EOF
+
+cat > "$PKGBUILD" <<EOF
+# Maintainer: BeckhamLabs <hello@beckhamlabs.com>
+pkgname=hivebear-bin
+pkgver=${VERSION}
+pkgrel=1
+pkgdesc="Run local AI models, with picks matched to your hardware"
+arch=('x86_64' 'aarch64')
+url="https://hivebear.com"
+license=('MIT')
+provides=('hivebear')
+conflicts=('hivebear')
+
+source_x86_64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v\${pkgver}/hivebear-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v\${pkgver}/hivebear-aarch64-unknown-linux-gnu.tar.gz")
+
+sha256sums_x86_64=('${X86_LINUX}')
+sha256sums_aarch64=('${ARM_LINUX}')
+
+package() {
+    install -Dm755 hivebear "\${pkgdir}/usr/bin/hivebear"
+}
+EOF
+
+echo "Updated ${FORMULA}, ${SCOOP} and ${PKGBUILD} to ${VERSION}"
