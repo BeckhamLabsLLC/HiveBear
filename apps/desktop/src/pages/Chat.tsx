@@ -5,6 +5,7 @@ import { useConversations } from "../hooks/useConversations";
 import ChatMessage from "../components/ChatMessage";
 import ChatInput from "../components/ChatInput";
 import ConversationDrawer from "../components/ConversationDrawer";
+import FirstChatNudge, { firstChatNudgeDismissed } from "../components/FirstChatNudge";
 import { DEFAULT_CHAT_PARAMS, type ChatParams } from "../components/ChatParamsPanel";
 import type { DisplayMessage } from "../hooks/useInference";
 import { PanelLeft, Plus, Loader, Sparkles } from "lucide-react";
@@ -23,6 +24,9 @@ export default function Chat() {
 
   // Conversation drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // One-time "run a benchmark" nudge after the first successful reply.
+  const [showNudge, setShowNudge] = useState(false);
 
   // Conversation persistence
   const {
@@ -93,6 +97,10 @@ export default function Chat() {
       temperature: chatParams.temperature,
       maxTokens: chatParams.maxTokens,
     });
+
+    if (assistantReply && !assistantReply.startsWith("Error:") && !firstChatNudgeDismissed()) {
+      setShowNudge(true);
+    }
 
     // Persist assistant reply
     if (convId && assistantReply) {
@@ -335,6 +343,8 @@ export default function Chat() {
           </div>
         )}
       </div>
+
+      {showNudge && !streaming && <FirstChatNudge onClose={() => setShowNudge(false)} />}
 
       {/* Input */}
       {loaded.length > 0 && (

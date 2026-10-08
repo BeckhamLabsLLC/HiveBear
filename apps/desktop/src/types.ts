@@ -53,6 +53,8 @@ export interface ModelRecommendation {
   confidence: number;
   warnings: string[];
   score: number;
+  /** Approximate model file size. 0 from older backends. */
+  estimated_download_bytes?: number;
 }
 
 export interface BenchmarkResult {
@@ -62,8 +64,22 @@ export interface BenchmarkResult {
   tokens_per_sec: number;
   time_to_first_token_ms: number;
   peak_memory_bytes: number;
+  /** Percent (0-100); 0 when not measured. */
   cpu_utilization: number;
+  /** Percent (0-100), if measured. */
   gpu_utilization: number | null;
+  /** "synthetic" (CPU estimate) or "inference" (a real model run). */
+  benchmark_type: string;
+  prompt_eval_tokens_per_sec: number | null;
+}
+
+/** A real benchmark of an installed model, as returned by run_model_benchmark. */
+export interface ModelBenchmarkResult {
+  result: BenchmarkResult;
+  model_id: string;
+  quantization: string;
+  engine: string;
+  context_length: number;
 }
 
 export interface Config {
@@ -80,6 +96,8 @@ export interface Config {
     enabled: boolean;
     install_id: string | null;
     notice_shown: boolean;
+    /** Anonymous usage counts (first launch, first chat, benchmark shared). */
+    usage_events: boolean;
   };
   // Mesh config (flattened for form state)
   mesh_enabled?: boolean;
@@ -327,4 +345,21 @@ export function formatBytes(bytes: number): string {
 
 export function formatToksPerSec(tps: number): string {
   return `${tps.toFixed(1)} tok/s`;
+}
+
+/**
+ * Display form of a quantization. The Rust enum serializes as its variant
+ * name ("Q4KM"), but GGUF filenames, the registry's quant matching and the
+ * leaderboard all use "Q4_K_M".
+ */
+export function formatQuant(q: string): string {
+  const m = /^Q(\d)K([SML])?$/.exec(q);
+  if (!m) return q;
+  return `Q${m[1]}_K${m[2] ? `_${m[2]}` : ""}`;
+}
+
+/** "~4.2 GB" style size for a download estimate. */
+export function formatDownloadSize(bytes: number | undefined): string | null {
+  if (!bytes || bytes <= 0) return null;
+  return `~${formatBytes(bytes)}`;
 }

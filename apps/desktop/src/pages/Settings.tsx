@@ -117,6 +117,17 @@ export default function Settings() {
                 }
               />
             </Field>
+            <Field
+              label="Usage Counts"
+              hint="Send anonymous usage counts (first launch, first chat, benchmark shared). No prompts, no content, no IP stored."
+            >
+              <Toggle
+                checked={form.telemetry?.usage_events ?? true}
+                onChange={(v) =>
+                  setForm({ ...form, telemetry: { ...form.telemetry, usage_events: v } })
+                }
+              />
+            </Field>
           </SettingsSection>
 
           {/* Mesh */}

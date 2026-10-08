@@ -5,6 +5,13 @@ import type { MeshStatus as MeshStatusType } from "../types";
 import { Link } from "react-router-dom";
 import { Network, Settings, Power, Shield, Activity, Wifi, WifiOff } from "lucide-react";
 import { Card, Button, Badge, Surface } from "../components/ui";
+import { notify } from "../components/Toast";
+import { EARLY_MESSAGE } from "../components/MeshStatusPill";
+
+/** For errors from silent commands; the others are already toasted by invoke(). */
+function reportMeshError(action: string, e: unknown) {
+  notify(`${action}: ${e instanceof Error ? e.message : String(e)}`, "error");
+}
 
 export default function MeshStatus() {
   const [status, setStatus] = useState<MeshStatusType | null>(null);
@@ -18,7 +25,10 @@ export default function MeshStatus() {
       const [s, c] = await Promise.all([getMeshStatus(), getMeshConnectionStatus()]);
       setStatus(s);
       setConnection(c);
-    } catch { /* ignore */ }
+    } catch (e) {
+      // Both calls are silent (they also run on a timer), so say so here.
+      reportMeshError("Couldn't read mesh status", e);
+    }
     finally { setLoading(false); }
   }, []);
 
@@ -39,10 +49,12 @@ export default function MeshStatus() {
       const config = await getMeshConfig();
       config.enabled = !config.enabled;
       await saveMeshConfig(config);
+      // Disabling should also take the node off the hive now, not at restart.
+      if (!config.enabled && connection?.running) await leaveMesh();
       await refresh();
-    } catch { /* ignore */ }
+    } catch { /* getMeshConfig/saveMeshConfig/leaveMesh already toasted */ }
     finally { setToggling(false); }
-  }, [status, refresh]);
+  }, [status, connection, refresh]);
 
   if (loading) {
     return <Surface><div className="flex h-full items-center justify-center text-text-muted text-sm">Loading mesh status...</div></Surface>;
@@ -127,7 +139,7 @@ export default function MeshStatus() {
         </Card>
 
         {/* Connection status */}
-        {status.enabled && connection && (
+        {connection && (
           <Card padding="lg">
             <div className="flex items-center gap-4">
               <div className={[
@@ -157,11 +169,15 @@ export default function MeshStatus() {
                   )}
                 </div>
                 <p className="mt-0.5 text-sm text-text-muted">
-                  {connection.registered
+                  {connection.registered && connection.peer_count === 0
+                    ? EARLY_MESSAGE
+                    : connection.registered
                     ? `Node ${connection.node_id?.slice(0, 12)}… registered and sending heartbeats`
                     : connection.running
                       ? "The coordination server is unreachable, so other peers cannot find you. Retrying in the background."
-                      : "Click Join to register with the coordination server."}
+                      : connection.last_error
+                        ? `Last attempt failed: ${connection.last_error}`
+                        : "Join to share idle compute with other bears. Nothing is shared until you do."}
                 </p>
               </div>
               <Button
@@ -174,9 +190,17 @@ export default function MeshStatus() {
                       await leaveMesh();
                     } else {
                       await joinMesh();
+                      // The node starts in the background, so a failed bind
+                      // or registration only shows up a moment later.
+                      for (let i = 0; i < 10; i++) {
+                        await new Promise((r) => setTimeout(r, 500));
+                        const c = await getMeshConnectionStatus();
+                        if (c.last_error) { reportMeshError("Couldn't join the hive", c.last_error); break; }
+                        if (c.registered) break;
+                      }
                     }
                     await refresh();
-                  } catch { /* ignore */ }
+                  } catch { /* joinMesh/leaveMesh already toasted the reason */ }
                   finally { setJoining(false); }
                 }}
               >

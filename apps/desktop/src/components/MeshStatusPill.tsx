@@ -7,7 +7,7 @@ import { useMeshPulse } from "../hooks/useMeshPulse";
  *
  * Shows one of:
  *   - "Mesh idle" with a muted dot (not running yet — CTA to enable)
- *   - "Mesh connecting" while joining (peer_count 0 and running)
+ *   - "You're early" when registered but nobody else is online
  *   - "Mesh active · N peers" when running with peers
  *   - "Mesh unreachable" when the poll fails repeatedly
  *
@@ -18,7 +18,7 @@ export default function MeshStatusPill() {
   const { status, loading, error } = useMeshPulse();
   const navigate = useNavigate();
 
-  const { label, tone, icon } = describe(status, loading, error);
+  const { label, tone, icon, title } = describe(status, loading, error);
 
   return (
     <button
@@ -33,13 +33,17 @@ export default function MeshStatusPill() {
           ? "border-warning/30 bg-warning/10 text-warning hover:bg-warning/15"
           : "border-border bg-surface-overlay text-text-muted hover:text-text-secondary",
       ].join(" ")}
-      aria-label={label}
+      aria-label={title ?? label}
+      title={title}
     >
       {icon}
       <span className="font-medium">{label}</span>
     </button>
   );
 }
+
+export const EARLY_MESSAGE =
+  "You're early — no peers online yet. Your machine will help others as the hive grows.";
 
 function describe(
   status: ReturnType<typeof useMeshPulse>["status"],
@@ -77,11 +81,14 @@ function describe(
       icon: <WifiOff size={12} aria-hidden />,
     };
   }
+  // Registered with nobody else online is a settled state, not a pending
+  // one. Showing "connecting" here meant a spinner that never resolved.
   if (status.peer_count === 0) {
     return {
-      label: "Mesh connecting",
+      label: "You're early · no peers yet",
       tone: "connecting" as const,
-      icon: <Network size={12} className="animate-pulse" aria-hidden />,
+      icon: <Network size={12} aria-hidden />,
+      title: EARLY_MESSAGE,
     };
   }
   return {
