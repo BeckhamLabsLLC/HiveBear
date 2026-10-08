@@ -68,18 +68,19 @@ jobs:
           # Linux binaries link against the build host's glibc, and only run
           # on systems with the same version or newer. ubuntu-latest (24.04,
           # glibc 2.39) produced a CLI that refused to start on Ubuntu 22.04
-          # and Debian 12. 22.04 gives glibc 2.35. The aarch64 build runs in
-          # the cross container, whose glibc is older still, so its host
-          # runner does not matter; it is pinned only for consistency.
+          # and Debian 12. 22.04 gives glibc 2.35. aarch64 builds natively on
+          # GitHub's ubuntu-22.04-arm runner for the same reason: the cross
+          # container (cross-rs :main) ships glibc 2.39, and v0.1.9's first
+          # release run failed the glibc floor check on it.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             binary: hivebear
             use_cross: false
             features: ""
-          - os: ubuntu-22.04
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             binary: hivebear
-            use_cross: true
+            use_cross: false
             features: ""
           - os: macos-latest
             target: x86_64-apple-darwin
