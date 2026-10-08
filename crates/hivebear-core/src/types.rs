@@ -232,6 +232,12 @@ pub struct ModelRecommendation {
     /// Number of community benchmark submissions backing the community estimate.
     #[serde(default)]
     pub community_sample_count: Option<u32>,
+    /// Approximate size of the model file to download, in bytes.
+    ///
+    /// Distinct from `estimated_memory_usage_bytes`, which includes the KV
+    /// cache and runtime overhead. This is what a first-run user waits for.
+    #[serde(default)]
+    pub estimated_download_bytes: u64,
 }
 
 /// Profiling mode: estimate-only or with real benchmarks.
@@ -250,7 +256,9 @@ pub struct BenchmarkResult {
     pub tokens_per_sec: f32,
     pub time_to_first_token_ms: u64,
     pub peak_memory_bytes: u64,
+    /// CPU utilization as a percentage (0-100), or 0 when not measured.
     pub cpu_utilization: f32,
+    /// GPU utilization as a percentage (0-100), if measured.
     pub gpu_utilization: Option<f32>,
     /// "synthetic" for CPU matmul estimate, "inference" for real model benchmark.
     #[serde(default = "default_benchmark_type")]
@@ -278,8 +286,14 @@ pub struct CommunityBenchmarkSubmission {
     pub time_to_first_token_ms: Option<u64>,
     #[serde(default)]
     pub prompt_eval_tokens_per_sec: Option<f32>,
+    /// Peak process memory, or 0 when the platform could not measure it.
     pub peak_memory_bytes: u64,
     pub client_version: String,
+    /// Random per-install ID (see `hivebear_core::usage::install_id`), so the
+    /// coordinator can dedupe and rate-limit anonymous submissions without an
+    /// account. Not derived from hardware or identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_id: Option<String>,
 }
 
 /// Aggregated community benchmark data for a model + hardware combination.

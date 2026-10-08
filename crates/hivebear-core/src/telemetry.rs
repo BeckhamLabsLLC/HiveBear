@@ -48,6 +48,15 @@ pub struct TelemetryConfig {
     /// each binary shows a one-time notice and records it here.
     #[serde(default)]
     pub notice_shown: bool,
+
+    /// Whether to send anonymous usage counts (first launch, first chat,
+    /// benchmark shared). See [`crate::usage`] for exactly what is sent.
+    ///
+    /// Separate from `enabled` because it is a different question: crash
+    /// reports say what broke, these say how far people get. Defaults to `true`
+    /// with a visible toggle on the desktop welcome screen.
+    #[serde(default = "crate::config::default_true")]
+    pub usage_events: bool,
 }
 
 impl Default for TelemetryConfig {
@@ -56,6 +65,7 @@ impl Default for TelemetryConfig {
             enabled: true,
             install_id: None,
             notice_shown: false,
+            usage_events: true,
         }
     }
 }
@@ -70,7 +80,7 @@ pub const COMPILED_DSN: Option<&str> = option_env!("HIVEBEAR_SENTRY_DSN");
 ///
 /// Returns `None` when unset or empty, so that an unset variable is distinct
 /// from one explicitly set to `0`.
-fn env_flag(name: &str) -> Option<bool> {
+pub(crate) fn env_flag(name: &str) -> Option<bool> {
     let raw = std::env::var(name).ok()?;
     let value = raw.trim().to_ascii_lowercase();
     if value.is_empty() {

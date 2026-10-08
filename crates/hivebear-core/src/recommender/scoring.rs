@@ -124,6 +124,7 @@ pub fn recommend(
                 score,
                 community_tokens_per_sec: None,
                 community_sample_count: None,
+                estimated_download_bytes: estimate_download_bytes(model, quant),
             };
 
             // Keep the best quantization for this model (highest score)
@@ -253,6 +254,14 @@ fn select_engine(profile: &HardwareProfile) -> InferenceEngine {
 
     // CPU only — llama.cpp is still the best option
     InferenceEngine::LlamaCpp
+}
+
+/// Estimate the size of the GGUF file for a model at a given quantization.
+///
+/// Weights only. Real files run a few percent larger (embeddings and output
+/// layers are often kept at higher precision), so this is shown as "~X GB".
+pub fn estimate_download_bytes(model: &ModelEntry, quant: Quantization) -> u64 {
+    (model.params_billions * 1_000_000_000.0 * quant.bits_per_weight() / 8.0) as u64
 }
 
 /// Estimate memory usage for a model at a given quantization.

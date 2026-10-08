@@ -54,9 +54,16 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshConfig {
     /// Whether mesh mode is enabled.
+    ///
+    /// Off by default: starting the mesh binds a QUIC socket on 0.0.0.0, which
+    /// on macOS and Windows means a firewall prompt before the user has seen
+    /// anything worth allowing. Joining is an explicit opt-in.
     pub enabled: bool,
     /// Automatically join the mesh when running inference.
-    #[serde(default = "default_true")]
+    ///
+    /// Defaults to false for the same reason as `enabled`. Configs written
+    /// before this default changed keep whatever value they saved.
+    #[serde(default)]
     pub auto_join: bool,
     /// Port for QUIC transport.
     pub port: u16,
@@ -255,8 +262,8 @@ impl Default for MobileConfig {
 impl Default for MeshConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            auto_join: true,
+            enabled: false,
+            auto_join: false,
             port: 7878,
             coordination_server: "https://mesh.hivebear.com".into(),
             bootstrap_servers: default_bootstrap_servers(),
@@ -415,6 +422,27 @@ mod tests {
         assert_eq!(config.max_memory_usage, 0.85);
         assert_eq!(config.min_tokens_per_sec, 5.0);
         assert_eq!(config.top_n_recommendations, 10);
+    }
+
+    #[test]
+    fn mesh_is_opt_in_by_default() {
+        let config = Config::default();
+        assert!(!config.mesh.enabled);
+        assert!(!config.mesh.auto_join);
+    }
+
+    #[test]
+    fn old_configs_without_new_fields_still_load() {
+        // A config written before `auto_join` and `usage_events` existed.
+        let mut table: toml::Table =
+            toml::from_str(&toml::to_string(&Config::default()).unwrap()).unwrap();
+        let mesh = table.get_mut("mesh").unwrap().as_table_mut().unwrap();
+        mesh.remove("auto_join");
+        let telemetry = table.get_mut("telemetry").unwrap().as_table_mut().unwrap();
+        telemetry.remove("usage_events");
+        let config: Config = toml::from_str(&toml::to_string(&table).unwrap()).unwrap();
+        assert!(!config.mesh.auto_join);
+        assert!(config.telemetry.usage_events);
     }
 
     #[test]

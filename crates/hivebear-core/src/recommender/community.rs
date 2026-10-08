@@ -68,6 +68,7 @@ mod tests {
             score: 0.8,
             community_tokens_per_sec: None,
             community_sample_count: None,
+            estimated_download_bytes: 0,
         }
     }
 

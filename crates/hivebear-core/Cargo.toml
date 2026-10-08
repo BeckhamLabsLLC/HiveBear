@@ -31,6 +31,9 @@ directories = "6"
 # Only used to mint the random per-install telemetry ID. Native-only: the WASM
 # build returns default config and never generates one.
 uuid = { version = "1", features = ["v4"] }
+# Benchmark submission and opt-in usage counts. Native-only, rustls-only, and
+# already in the tree through hivebear-mesh and hivebear-registry.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 wgpu = { version = "24", features = ["vulkan-portability"] }
 keyring = { version = "3", optional = true }
 
