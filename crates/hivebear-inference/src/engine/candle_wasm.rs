@@ -81,6 +81,35 @@ impl CandleWasmBackend {
         Ok(handle)
     }
 
+    /// Generate with a callback per token, for callers that can surface tokens
+    /// as they arrive (the browser playground, running in a Web Worker).
+    /// `stream()` can't do this on wasm32: with no threads it has to finish
+    /// generating before the stream yields anything.
+    pub fn generate_streaming(
+        &self,
+        handle: &ModelHandle,
+        req: &GenerateRequest,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        let mut models = self.get_loaded_mut();
+        let loaded = models
+            .get_mut(&handle.id)
+            .ok_or(InferenceError::InvalidHandle)?;
+        let mut full_text = String::new();
+        let mut failure = None;
+        for_each_token(loaded, req, &mut |t| match t {
+            Ok(token) => {
+                full_text.push_str(&token.text);
+                on_token(&token.text);
+            }
+            Err(e) => failure = Some(e),
+        });
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(full_text),
+        }
+    }
+
     fn get_loaded_mut(&self) -> std::sync::MutexGuard<'_, HashMap<u64, LoadedModel>> {
         self.loaded_models.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -170,6 +199,45 @@ fn build_prompt(req: &GenerateRequest) -> String {
     chat_template::render(format, &req.messages, &req.tools)
 }
 
+/// Logits for the last position. candle's quantized_llama already returns only
+/// the last position (`[batch, vocab]`); other models return
+/// `[batch, seq, vocab]`. Indexing the 2-D case as 3-D panicked on the first
+/// token, so browser generation never produced output.
+fn last_position_logits(logits: &Tensor) -> Result<Tensor> {
+    match logits.rank() {
+        2 => Ok(logits.clone()),
+        3 => {
+            let last = logits
+                .dim(1)
+                .map_err(|e| InferenceError::GenerationError(format!("Index failed: {e}")))?
+                .saturating_sub(1);
+            logits
+                .i((.., last, ..))
+                .map_err(|e| InferenceError::GenerationError(format!("Index failed: {e}")))
+        }
+        r => Err(InferenceError::GenerationError(format!(
+            "Unexpected logits rank {r}"
+        ))),
+    }
+}
+
+/// Every end-of-turn / end-of-text token the tokenizer knows. Chat models stop
+/// on their template's end-of-turn token (`<|im_end|>` for ChatML models such
+/// as SmolLM2, `<|eot_id|>` for Llama 3), not only on the base EOS token.
+fn stop_token_ids(tokenizer: &tokenizers::Tokenizer) -> Vec<u32> {
+    [
+        "</s>",
+        "<|endoftext|>",
+        "<|end|>",
+        "<|im_end|>",
+        "<|eot_id|>",
+        "<|end_of_text|>",
+    ]
+    .iter()
+    .filter_map(|t| tokenizer.token_to_id(t))
+    .collect()
+}
+
 /// Sample the next token from logits.
 fn sample_token(logits: &Tensor, temperature: f32, top_p: f32) -> Result<u32> {
     let logits = logits
@@ -237,123 +305,55 @@ fn rand_f32() -> f32 {
 
 /// Blocking generation returning the complete text.
 fn generate_blocking(loaded: &mut LoadedModel, req: &GenerateRequest) -> Result<String> {
-    let prompt = build_prompt(req);
-    let encoding = loaded
-        .tokenizer
-        .encode(prompt.as_str(), true)
-        .map_err(|e| InferenceError::GenerationError(format!("Tokenization failed: {e}")))?;
-
-    let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
-    let input = Tensor::new(prompt_tokens.as_slice(), &loaded.device)
-        .map_err(|e| InferenceError::GenerationError(format!("Tensor creation failed: {e}")))?
-        .unsqueeze(0)
-        .map_err(|e| InferenceError::GenerationError(format!("Unsqueeze failed: {e}")))?;
-
-    let logits = loaded
-        .weights
-        .forward(&input, 0)
-        .map_err(|e| InferenceError::GenerationError(format!("Forward pass failed: {e}")))?;
-
-    let last_logits = logits
-        .i((.., logits.dim(1).unwrap_or(1) - 1, ..))
-        .map_err(|e| InferenceError::GenerationError(format!("Index failed: {e}")))?;
-
-    let mut next_token = sample_token(&last_logits, req.sampling.temperature, req.sampling.top_p)?;
     let mut output = String::new();
-    let seq_len = prompt_tokens.len();
-
-    let eos_token = loaded
-        .tokenizer
-        .token_to_id("</s>")
-        .or_else(|| loaded.tokenizer.token_to_id("<|endoftext|>"))
-        .or_else(|| loaded.tokenizer.token_to_id("<|end|>"))
-        .unwrap_or(u32::MAX);
-
-    for i in 0..req.max_tokens {
-        if next_token == eos_token {
-            break;
-        }
-
-        if let Ok(text) = loaded.tokenizer.decode(&[next_token], true) {
-            output.push_str(&text);
-        }
-
-        if req.stop_sequences.iter().any(|stop| output.ends_with(stop)) {
-            for stop in &req.stop_sequences {
-                if output.ends_with(stop) {
-                    output.truncate(output.len() - stop.len());
-                    break;
-                }
-            }
-            break;
-        }
-
-        let input = Tensor::new(&[next_token], &loaded.device)
-            .map_err(|e| InferenceError::GenerationError(format!("Tensor failed: {e}")))?
-            .unsqueeze(0)
-            .map_err(|e| InferenceError::GenerationError(format!("Unsqueeze failed: {e}")))?;
-
-        let logits = loaded
-            .weights
-            .forward(&input, seq_len + i as usize)
-            .map_err(|e| InferenceError::GenerationError(format!("Forward failed: {e}")))?;
-
-        let last_logits = logits
-            .i((.., logits.dim(1).unwrap_or(1) - 1, ..))
-            .map_err(|e| InferenceError::GenerationError(format!("Index failed: {e}")))?;
-
-        next_token = sample_token(&last_logits, req.sampling.temperature, req.sampling.top_p)?;
+    let mut failure = None;
+    for_each_token(loaded, req, &mut |t| match t {
+        Ok(token) => output.push_str(&token.text),
+        Err(e) => failure = Some(e),
+    });
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(output),
     }
-
-    Ok(output)
 }
 
 /// Collect all tokens synchronously into a Vec for the stream() method.
 fn collect_tokens_blocking(loaded: &mut LoadedModel, req: &GenerateRequest) -> Vec<Result<Token>> {
-    let prompt = match build_and_encode(loaded, req) {
-        Ok(v) => v,
-        Err(e) => return vec![Err(e)],
-    };
-
-    let (prompt_tokens, input) = prompt;
     let mut tokens = Vec::new();
+    for_each_token(loaded, req, &mut |t| tokens.push(t));
+    tokens
+}
 
-    let logits = match loaded.weights.forward(&input, 0) {
-        Ok(l) => l,
-        Err(e) => {
-            return vec![Err(InferenceError::GenerationError(format!(
-                "Forward pass failed: {e}"
-            )))]
-        }
+/// Run generation, handing each token (or the error that ended it) to `emit`
+/// as soon as it is sampled. This is what lets the browser show tokens while
+/// the model is still generating instead of all at once at the end.
+fn for_each_token(
+    loaded: &mut LoadedModel,
+    req: &GenerateRequest,
+    emit: &mut dyn FnMut(Result<Token>),
+) {
+    let (prompt_tokens, input) = match build_and_encode(loaded, req) {
+        Ok(v) => v,
+        Err(e) => return emit(Err(e)),
     };
 
-    let last_logits = match logits.i((.., logits.dim(1).unwrap_or(1) - 1, ..)) {
-        Ok(l) => l,
-        Err(e) => {
-            return vec![Err(InferenceError::GenerationError(format!(
-                "Index failed: {e}"
-            )))]
-        }
+    let first = loaded
+        .weights
+        .forward(&input, 0)
+        .map_err(|e| InferenceError::GenerationError(format!("Forward pass failed: {e}")))
+        .and_then(|logits| last_position_logits(&logits))
+        .and_then(|logits| sample_token(&logits, req.sampling.temperature, req.sampling.top_p));
+    let mut next_token = match first {
+        Ok(t) => t,
+        Err(e) => return emit(Err(e)),
     };
-
-    let mut next_token =
-        match sample_token(&last_logits, req.sampling.temperature, req.sampling.top_p) {
-            Ok(t) => t,
-            Err(e) => return vec![Err(e)],
-        };
 
     let seq_len = prompt_tokens.len();
     let mut accumulated = String::new();
-
-    let eos_token = loaded
-        .tokenizer
-        .token_to_id("</s>")
-        .or_else(|| loaded.tokenizer.token_to_id("<|endoftext|>"))
-        .or_else(|| loaded.tokenizer.token_to_id("<|end|>"))
-        .unwrap_or(u32::MAX);
+    let stop_tokens = stop_token_ids(&loaded.tokenizer);
 
     for i in 0..req.max_tokens {
-        if next_token == eos_token {
+        if stop_tokens.contains(&next_token) {
             break;
         }
 
@@ -372,62 +372,30 @@ fn collect_tokens_blocking(loaded: &mut LoadedModel, req: &GenerateRequest) -> V
             break;
         }
 
-        tokens.push(Ok(Token {
+        emit(Ok(Token {
             text: piece,
             id: next_token,
             logprob: None,
             is_special: false,
         }));
 
-        let input = match Tensor::new(&[next_token], &loaded.device) {
-            Ok(t) => match t.unsqueeze(0) {
-                Ok(t) => t,
-                Err(e) => {
-                    tokens.push(Err(InferenceError::GenerationError(format!(
-                        "Unsqueeze failed: {e}"
-                    ))));
-                    break;
-                }
-            },
-            Err(e) => {
-                tokens.push(Err(InferenceError::GenerationError(format!(
-                    "Tensor failed: {e}"
-                ))));
-                break;
-            }
-        };
+        let step = Tensor::new(&[next_token], &loaded.device)
+            .and_then(|t| t.unsqueeze(0))
+            .map_err(|e| InferenceError::GenerationError(format!("Tensor failed: {e}")))
+            .and_then(|input| {
+                loaded
+                    .weights
+                    .forward(&input, seq_len + i as usize)
+                    .map_err(|e| InferenceError::GenerationError(format!("Forward failed: {e}")))
+            })
+            .and_then(|logits| last_position_logits(&logits))
+            .and_then(|logits| sample_token(&logits, req.sampling.temperature, req.sampling.top_p));
 
-        let logits = match loaded.weights.forward(&input, seq_len + i as usize) {
-            Ok(l) => l,
-            Err(e) => {
-                tokens.push(Err(InferenceError::GenerationError(format!(
-                    "Forward failed: {e}"
-                ))));
-                break;
-            }
-        };
-
-        let last_logits = match logits.i((.., logits.dim(1).unwrap_or(1) - 1, ..)) {
-            Ok(l) => l,
-            Err(e) => {
-                tokens.push(Err(InferenceError::GenerationError(format!(
-                    "Index failed: {e}"
-                ))));
-                break;
-            }
-        };
-
-        next_token = match sample_token(&last_logits, req.sampling.temperature, req.sampling.top_p)
-        {
+        next_token = match step {
             Ok(t) => t,
-            Err(e) => {
-                tokens.push(Err(e));
-                break;
-            }
+            Err(e) => return emit(Err(e)),
         };
     }
-
-    tokens
 }
 
 /// Helper to build prompt and encode into tensor.
@@ -474,6 +442,20 @@ mod tests {
         assert!(prompt.contains("You are a helpful AI."));
         assert!(prompt.contains("What is Rust?"));
         assert!(prompt.ends_with("<|assistant|>\n"));
+    }
+
+    #[test]
+    fn test_last_position_logits_accepts_both_shapes() {
+        let device = Device::Cpu;
+        // quantized_llama returns [batch, vocab] for the last position only.
+        let two_d = Tensor::new(&[[0.1f32, 0.2, 0.3]], &device).unwrap();
+        let out = last_position_logits(&two_d).unwrap();
+        assert_eq!(out.dims(), &[1, 3]);
+
+        // Full-sequence models return [batch, seq, vocab]; take the last row.
+        let three_d = Tensor::new(&[[[0.0f32, 0.0], [1.0, 2.0]]], &device).unwrap();
+        let out = last_position_logits(&three_d).unwrap();
+        assert_eq!(out.to_vec2::<f32>().unwrap(), vec![vec![1.0, 2.0]]);
     }
 
     #[test]
