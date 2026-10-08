@@ -68,9 +68,18 @@ candle-core = { version = "0.8", optional = true }
 candle-transformers = { version = "0.8", optional = true }
 candle-nn = { version = "0.8", optional = true }
 tokenizers = { version = "0.20", optional = true, default-features = false }
+
+# macOS and Windows keep OpenMP for llama.cpp's CPU threading.
+[target.'cfg(not(any(target_os = "android", target_os = "linux")))'.dependencies]
 llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false, features = [
     "openmp",
 ] }
+
+# Linux: no OpenMP. With it, the binary links libgomp.so.1, which minimal
+# systems and containers (ubuntu:22.04, debian:12-slim) do not ship, so the
+# release CLI failed to start there. ggml falls back to its own pthread pool.
+[target.'cfg(target_os = "linux")'.dependencies]
+llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false }
 
 # Android: link libc++ statically. With the default shared linkage the APK has
 # to ship libc++_shared.so alongside the native library, and a missing one
