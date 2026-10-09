@@ -12,9 +12,26 @@ pub struct HuggingFaceSource {
 
 /// HuggingFace API model response (subset of fields).
 #[derive(Debug, Deserialize)]
+#[serde(try_from = "RawHfModel")]
 struct HfModelResponse {
-    #[serde(rename = "modelId", alias = "id")]
     model_id: String,
+    tags: Vec<String>,
+    downloads: u64,
+    likes: u64,
+    siblings: Vec<HfSibling>,
+    last_modified: Option<String>,
+}
+
+/// The wire shape. HF sends the repo id as `id`, and on most endpoints also as
+/// the legacy `modelId`. Both are read as separate optional fields: a serde
+/// `alias` would treat them as one field and reject every response carrying
+/// both as "duplicate field `modelId`", which broke every install and search.
+#[derive(Deserialize)]
+struct RawHfModel {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(rename = "modelId", default)]
+    legacy_model_id: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
@@ -25,6 +42,25 @@ struct HfModelResponse {
     siblings: Vec<HfSibling>,
     #[serde(rename = "lastModified", default)]
     last_modified: Option<String>,
+}
+
+impl TryFrom<RawHfModel> for HfModelResponse {
+    type Error = &'static str;
+
+    fn try_from(raw: RawHfModel) -> std::result::Result<Self, Self::Error> {
+        let model_id = raw
+            .id
+            .or(raw.legacy_model_id)
+            .ok_or("HuggingFace model response has neither `id` nor `modelId`")?;
+        Ok(Self {
+            model_id,
+            tags: raw.tags,
+            downloads: raw.downloads,
+            likes: raw.likes,
+            siblings: raw.siblings,
+            last_modified: raw.last_modified,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -341,6 +377,45 @@ pub fn parse_quantization_from_filename(filename: &str) -> Option<Quantization> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_responses_with_id_and_model_id() {
+        // Trimmed from a live /api/models/{repo} response, which carries both.
+        let json = r#"{"_id":"6731","id":"bartowski/SmolLM2-135M-Instruct-GGUF","modelId":"bartowski/SmolLM2-135M-Instruct-GGUF","downloads":1234,"likes":5,"tags":["gguf"],"siblings":[{"rfilename":"SmolLM2-135M-Instruct-Q4_K_M.gguf"}],"lastModified":"2024-11-01T00:00:00.000Z"}"#;
+        let m: super::HfModelResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(m.model_id, "bartowski/SmolLM2-135M-Instruct-GGUF");
+        assert_eq!(m.siblings.len(), 1);
+
+        // Search results are a list of the same shape.
+        let list = format!("[{json}]");
+        let ms: Vec<super::HfModelResponse> = serde_json::from_str(&list).unwrap();
+        assert_eq!(ms.len(), 1);
+    }
+
+    /// Hits the real HuggingFace API, so it's opt-in:
+    /// `cargo test -p hivebear-registry -- --ignored live_hf`.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn live_hf_get_search_and_list_files() {
+        let hf = super::HuggingFaceSource::new();
+        let repo = "bartowski/SmolLM2-135M-Instruct-GGUF";
+        let meta = hf.get(repo).await.unwrap().expect("repo exists");
+        assert_eq!(meta.huggingface_id.as_deref(), Some(repo));
+        let files = hf.list_files(repo).await.unwrap();
+        assert!(files.iter().any(|f| f.filename.ends_with("Q4_K_M.gguf")));
+        let found = hf.search("smollm2", 5).await.unwrap();
+        assert!(!found.is_empty());
+    }
+
+    #[test]
+    fn parses_responses_with_only_one_id_field() {
+        let only_id: super::HfModelResponse = serde_json::from_str(r#"{"id":"a/b"}"#).unwrap();
+        assert_eq!(only_id.model_id, "a/b");
+        let only_legacy: super::HfModelResponse =
+            serde_json::from_str(r#"{"modelId":"c/d"}"#).unwrap();
+        assert_eq!(only_legacy.model_id, "c/d");
+        assert!(serde_json::from_str::<super::HfModelResponse>(r#"{"tags":[]}"#).is_err());
+    }
+
     use super::*;
 
     #[test]

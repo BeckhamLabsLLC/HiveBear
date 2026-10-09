@@ -101,20 +101,28 @@ pub async fn send_usage_event(event: &str) {
 
 /// Like [`send_usage_event`], but at most once per install.
 ///
-/// The marker is written before sending, so an offline first run loses the
-/// event rather than retrying (and waiting on the timeout) every time.
+/// The marker is written only once the coordinator has answered. It used to
+/// be written first, so one offline first run, or a send that timed out while
+/// the coordinator woke from suspension, lost the event for good. Now a
+/// failed send is retried the next time the event fires; the coordinator
+/// dedupes these events per install, so a double send is harmless.
 pub async fn send_usage_event_once(event: &str) {
     let config = Config::load();
     if !usage_events_enabled(&config) {
         return;
     }
-    if !mark_once_in(&AppPaths::new().config_dir, event) {
+    let dir = AppPaths::new().config_dir;
+    if already_sent_in(&dir, event) {
         return;
     }
-    send(&config, event).await;
+    if send(&config, event).await {
+        mark_sent_in(&dir, event);
+    }
 }
 
-async fn send(config: &Config, event: &str) {
+/// Returns `true` when the event needs no retry: the coordinator accepted it,
+/// or rejected it in a way a retry can't fix (any 4xx but 429).
+async fn send(config: &Config, event: &str) -> bool {
     let server = config.mesh.coordination_server.trim_end_matches('/');
     let url = format!("{server}/telemetry/event");
     let body = UsageEvent {
@@ -128,22 +136,37 @@ async fn send(config: &Config, event: &str) {
         Ok(c) => c,
         Err(e) => {
             tracing::debug!("Usage event '{event}' not sent: {e}");
-            return;
+            return false;
         }
     };
     match client.post(&url).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {}
-        Ok(resp) => tracing::debug!("Usage event '{event}' returned {}", resp.status()),
-        Err(e) => tracing::debug!("Usage event '{event}' not sent: {e}"),
+        Ok(resp) if resp.status().is_success() => true,
+        Ok(resp) => {
+            let status = resp.status();
+            tracing::debug!("Usage event '{event}' returned {status}");
+            status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+        }
+        Err(e) => {
+            tracing::debug!("Usage event '{event}' not sent: {e}");
+            false
+        }
     }
 }
 
-/// Record `event` in the marker file. Returns `true` if it was not there yet.
-fn mark_once_in(dir: &Path, event: &str) -> bool {
+/// Whether `event` is already in the marker file.
+fn already_sent_in(dir: &Path, event: &str) -> bool {
+    std::fs::read_to_string(dir.join(MARKERS_FILE))
+        .unwrap_or_default()
+        .lines()
+        .any(|line| line.trim() == event)
+}
+
+/// Record `event` in the marker file (no-op if it's already there).
+fn mark_sent_in(dir: &Path, event: &str) {
     let file: PathBuf = dir.join(MARKERS_FILE);
     let existing = std::fs::read_to_string(&file).unwrap_or_default();
     if existing.lines().any(|line| line.trim() == event) {
-        return false;
+        return;
     }
     let mut updated = existing;
     if !updated.is_empty() && !updated.ends_with('\n') {
@@ -154,7 +177,6 @@ fn mark_once_in(dir: &Path, event: &str) -> bool {
     if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, updated)) {
         tracing::debug!("Could not record usage marker at {}: {e}", file.display());
     }
-    true
 }
 
 #[cfg(test)]
@@ -192,10 +214,16 @@ mod tests {
     #[test]
     fn once_markers_fire_once_per_event() {
         let dir = scratch_dir("markers");
-        assert!(mark_once_in(&dir, EVENT_FIRST_LAUNCH));
-        assert!(!mark_once_in(&dir, EVENT_FIRST_LAUNCH));
-        assert!(mark_once_in(&dir, EVENT_FIRST_INFERENCE));
-        assert!(!mark_once_in(&dir, EVENT_FIRST_INFERENCE));
+        assert!(!already_sent_in(&dir, EVENT_FIRST_LAUNCH));
+        mark_sent_in(&dir, EVENT_FIRST_LAUNCH);
+        assert!(already_sent_in(&dir, EVENT_FIRST_LAUNCH));
+        assert!(!already_sent_in(&dir, EVENT_FIRST_INFERENCE));
+        mark_sent_in(&dir, EVENT_FIRST_INFERENCE);
+        mark_sent_in(&dir, EVENT_FIRST_INFERENCE);
+        assert!(already_sent_in(&dir, EVENT_FIRST_INFERENCE));
+        assert!(already_sent_in(&dir, EVENT_FIRST_LAUNCH));
+        let markers = std::fs::read_to_string(dir.join(MARKERS_FILE)).unwrap();
+        assert_eq!(markers.lines().count(), 2);
         std::fs::remove_dir_all(dir).ok();
     }
 

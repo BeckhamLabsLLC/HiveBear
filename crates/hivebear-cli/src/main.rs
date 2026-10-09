@@ -1211,6 +1211,7 @@ async fn cmd_benchmark(
             }
             Err(e) => {
                 eprintln!("{}: {e}", "Benchmark failed".red().bold());
+                std::process::exit(1);
             }
         }
     } else {
@@ -1965,7 +1966,7 @@ async fn cmd_quickstart(temperature: f32, context_length: u32) {
             Err(e) => {
                 pb.lock().unwrap().finish_and_clear();
                 eprintln!("{}: {e}", "Installation failed".red().bold());
-                return;
+                std::process::exit(1);
             }
         }
     }
