@@ -1,7 +1,7 @@
 class Hivebear < Formula
   desc "Run local AI models, with picks matched to your hardware"
   homepage "https://hivebear.com"
-  version "0.1.9"
+  version "0.1.10"
   license "MIT"
 
   on_macos do
