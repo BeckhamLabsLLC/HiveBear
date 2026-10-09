@@ -34,7 +34,7 @@ pub async fn cmd_search(query: String, limit: usize, json: bool) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{}: {e}", "Search failed".red().bold());
-            return;
+            std::process::exit(1);
         }
     };
 
@@ -206,6 +206,7 @@ pub async fn cmd_install(model: String, quant: Option<String>, file: Option<Stri
         Err(e) => {
             pb.lock().unwrap().finish_and_clear();
             eprintln!("{}: {e}", "Installation failed".red().bold());
+            std::process::exit(1);
         }
     }
 }

@@ -1,6 +1,6 @@
 # Maintainer: BeckhamLabs <hello@beckhamlabs.com>
 pkgname=hivebear-bin
-pkgver=0.1.9
+pkgver=0.1.10
 pkgrel=1
 pkgdesc="Run local AI models, with picks matched to your hardware"
 arch=('x86_64' 'aarch64')

@@ -5,6 +5,19 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-10-09
+
+Installing a model works again.
+
+### Fixed
+- Every model install and search failed with "HuggingFace API error: error
+  decoding response body", in both the desktop app and the CLI. HuggingFace
+  now sends a model's id under two names and HiveBear rejected the response.
+- `hivebear install`, `search` and `benchmark` exit with status 1 when they
+  fail instead of 0.
+- Anonymous usage counts (if enabled) are no longer lost when the first send
+  fails or times out; they are retried the next time instead.
+
 ## [0.1.9] - 2026-10-08
 
 Getting from the website to a first answer, and sharing a benchmark, now
