@@ -105,6 +105,17 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
+      # llama.cpp's vendored cpp-httplib (llama-cpp-sys-2 0.1.141) only builds
+      # against OpenSSL 3: OpenSSL 4 made X509_get_subject_name return const.
+      # Homebrew's "openssl" became openssl@4 in October 2026, and new macOS
+      # runner images link it, so CMake picked it up and the build broke.
+      # FindOpenSSL checks OPENSSL_ROOT_DIR before its default paths.
+      - name: Point llama.cpp at OpenSSL 3 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -241,6 +252,17 @@ jobs:
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
 
+      # llama.cpp's vendored cpp-httplib (llama-cpp-sys-2 0.1.141) only builds
+      # against OpenSSL 3: OpenSSL 4 made X509_get_subject_name return const.
+      # Homebrew's "openssl" became openssl@4 in October 2026, and new macOS
+      # runner images link it, so CMake picked it up and the build broke.
+      # FindOpenSSL checks OPENSSL_ROOT_DIR before its default paths.
+      - name: Point llama.cpp at OpenSSL 3 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -336,7 +358,12 @@ jobs:
           ARCH=x86_64 "$work/appimagetool" --appimage-extract-and-run --no-appstream \
             "$work/squashfs-root" "$appimage"
           cd apps/desktop
-          cargo tauri signer sign "$appimage"
+          # Pass the key explicitly: tauri-cli 2.5's `signer sign` reads
+          # TAURI_PRIVATE_KEY, not the TAURI_SIGNING_PRIVATE_KEY the build uses.
+          cargo tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            "$appimage"
           test -s "$appimage.sig"
           ls -l "$(dirname "$appimage")"
 
