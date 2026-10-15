@@ -24,3 +24,4 @@ packaging/
 config.toml
 *.key
 identity.key
+Dockerfile*
