@@ -8,7 +8,7 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 
 use crate::chat_template;
@@ -211,6 +211,7 @@ fn build_sampler(model: &LlamaModel, req: &GenerateRequest, seed: u32) -> LlamaS
     // Penalties (repeat, frequency, presence)
     if s.repeat_penalty != 1.0 || s.frequency_penalty != 0.0 || s.presence_penalty != 0.0 {
         samplers.push(LlamaSampler::penalties(
+            model.n_vocab(),
             64, // look-back window
             s.repeat_penalty,
             s.frequency_penalty,
@@ -256,10 +257,7 @@ fn generate_blocking(
     req: &GenerateRequest,
 ) -> Result<String> {
     let prompt = build_prompt(req);
-    let tokens = loaded
-        .model
-        .str_to_token(&prompt, AddBos::Always)
-        .map_err(|e| InferenceError::GenerationError(format!("Tokenization failed: {e}")))?;
+    let tokens = tokenize_prompt(&loaded.model, &prompt)?;
 
     let n_ctx = config.context_length;
     let n_threads = config.threads.unwrap_or(num_cpus() as u32);
@@ -288,7 +286,7 @@ fn generate_blocking(
         .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
 
     let mut output = String::new();
-    let eos = loaded.model.token_eos();
+    let vocab = loaded.model.vocab();
 
     // n_decoded is the absolute context position: prompt length plus however
     // many tokens have been emitted so far.
@@ -296,7 +294,7 @@ fn generate_blocking(
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
 
-        if token == eos || loaded.model.is_eog_token(token) {
+        if token == vocab.eos() || vocab.is_eog(token) {
             break;
         }
 
@@ -335,10 +333,7 @@ fn stream_blocking(
     tx: &tokio::sync::mpsc::Sender<Result<Token>>,
 ) -> Result<()> {
     let prompt = build_prompt(req);
-    let tokens = loaded
-        .model
-        .str_to_token(&prompt, AddBos::Always)
-        .map_err(|e| InferenceError::GenerationError(format!("Tokenization failed: {e}")))?;
+    let tokens = tokenize_prompt(&loaded.model, &prompt)?;
 
     let n_ctx = config.context_length;
     let n_threads = config.threads.unwrap_or(num_cpus() as u32);
@@ -366,14 +361,14 @@ fn stream_blocking(
     ctx.decode(&mut batch)
         .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
 
-    let eos = loaded.model.token_eos();
+    let vocab = loaded.model.vocab();
     let mut accumulated = String::new();
 
     for n_decoded in (tokens.len() as i32..).take(req.max_tokens as usize) {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
 
-        if token == eos || loaded.model.is_eog_token(token) {
+        if token == vocab.eos() || vocab.is_eog(token) {
             break;
         }
 
@@ -415,12 +410,25 @@ fn stream_blocking(
     Ok(())
 }
 
-/// Convert a token to a string using the non-deprecated `token_to_piece` API.
+/// Tokenize the full prompt, letting the vocab add BOS/EOS as the model is
+/// configured to and parsing special tokens emitted by the chat template.
+fn tokenize_prompt(
+    model: &LlamaModel,
+    prompt: &str,
+) -> Result<Vec<llama_cpp_2::token::LlamaToken>> {
+    let tokens = model.vocab().tokenize(prompt.as_bytes(), true, true);
+    if tokens.is_empty() {
+        return Err(InferenceError::GenerationError(
+            "Tokenization produced no tokens".into(),
+        ));
+    }
+    Ok(tokens)
+}
+
+/// Convert a token to a string via the vocab's `token_to_piece`.
 fn token_to_string(model: &LlamaModel, token: llama_cpp_2::token::LlamaToken) -> String {
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
-    model
-        .token_to_piece(token, &mut decoder, true, None)
-        .unwrap_or_default()
+    let bytes = model.vocab().token_to_piece(token, true, None);
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn num_cpus() -> usize {

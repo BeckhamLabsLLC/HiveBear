@@ -26,9 +26,6 @@ tracing = "0.1"
 # UUID for tool call IDs
 uuid = { version = "1", features = ["v4", "js"] }
 
-# Text encoding (for llama.cpp token decoding)
-encoding_rs = "0.8"
-
 # Base64 (for image data in multimodal messages)
 base64 = "0.22"
 
@@ -40,7 +37,7 @@ base64 = "0.22"
 # resolve paired llama-cpp-2 0.1.141 with llama-cpp-sys-2 0.1.156, whose
 # regenerated 5-argument binding does not match its caller. Pin both, and
 # move them together.
-llama-cpp-sys-2 = { version = "=0.1.141", optional = true }
+llama-cpp-sys-2 = { version = "=0.1.159", optional = true }
 ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = ["load-dynamic"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
 async-stream = { version = "0.3", optional = true }
@@ -71,7 +68,7 @@ tokenizers = { version = "0.20", optional = true, default-features = false }
 
 # macOS and Windows keep OpenMP for llama.cpp's CPU threading.
 [target.'cfg(not(any(target_os = "android", target_os = "linux")))'.dependencies]
-llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false, features = [
+llama-cpp-2 = { version = "=0.1.159", optional = true, default-features = false, features = [
     "openmp",
 ] }
 
@@ -79,7 +76,7 @@ llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false,
 # systems and containers (ubuntu:22.04, debian:12-slim) do not ship, so the
 # release CLI failed to start there. ggml falls back to its own pthread pool.
 [target.'cfg(target_os = "linux")'.dependencies]
-llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false }
+llama-cpp-2 = { version = "=0.1.159", optional = true, default-features = false }
 
 # Android: link libc++ statically. With the default shared linkage the APK has
 # to ship libc++_shared.so alongside the native library, and a missing one
@@ -88,7 +85,7 @@ llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false 
 # set), so this cannot just be added to the entry above. That build script
 # also forces GGML_OPENMP off for Android, which is why OpenMP is absent here.
 [target.'cfg(target_os = "android")'.dependencies]
-llama-cpp-2 = { version = "=0.1.141", optional = true, default-features = false, features = [
+llama-cpp-2 = { version = "=0.1.159", optional = true, default-features = false, features = [
     "android-static-stdcxx",
 ] }
 
