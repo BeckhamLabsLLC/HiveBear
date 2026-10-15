@@ -37,3 +37,11 @@ debug = "line-tables-only"
 # Deliberately not stripped. `strip = true` would delete exactly what the line
 # above adds.
 strip = "none"
+
+# Keep target/ from ballooning: full DWARF for every dependency was most of a
+# 76 GB debug dir. Line tables still give file:line in backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
