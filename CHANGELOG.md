@@ -5,6 +5,19 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-10-16
+
+Settings save on Android again, and joining the hive works there.
+
+### Fixed
+- The Android app could not save settings: every change was lost, and the app
+  came back on defaults at each launch. It now keeps its settings in its own
+  app data folder, alongside the model list and chat history.
+- On Android, Join on the hive page failed before the node started, so the
+  app never found any peers. Same cause as above.
+- Crash reporting on Android now respects a saved opt-out from the first
+  moment of startup.
+
 ## [0.1.11] - 2026-10-15
 
 The Linux AppImage opens again, and loading a second model works.
