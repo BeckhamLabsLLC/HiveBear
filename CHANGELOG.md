@@ -5,6 +5,28 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-10-15
+
+The Linux AppImage opens again, and loading a second model works.
+
+### Fixed
+- The Linux AppImage crashed before showing a window on newer distributions
+  (seen on Fedora 44): "Could not create default EGL display:
+  EGL_BAD_PARAMETER". The AppImage no longer bundles its own copy of
+  libwayland, which conflicted with the system's graphics drivers.
+- A graphics-driver problem while detecting GPUs can no longer stop the desktop
+  app from starting; it now starts without GPU information instead.
+- Loading a model after another had already been loaded failed with "Failed to
+  init llama backend: BackendAlreadyInitialized".
+- Links in Settings → About did nothing in the Android app, and the Account
+  page's Upgrade button could not open checkout.
+
+### Security
+- Updated quinn-proto, fixing ways a remote mesh peer could crash the QUIC
+  transport or grow its memory without bound (RUSTSEC-2026-0338, -0339,
+  -0340).
+- Updated rustls (RUSTSEC-2026-0346 to -0349).
+
 ## [0.1.10] - 2026-10-09
 
 Installing a model works again.

@@ -105,6 +105,17 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
+      # llama.cpp's vendored cpp-httplib (llama-cpp-sys-2 0.1.141) only builds
+      # against OpenSSL 3: OpenSSL 4 made X509_get_subject_name return const.
+      # Homebrew's "openssl" became openssl@4 in October 2026, and new macOS
+      # runner images link it, so CMake picked it up and the build broke.
+      # FindOpenSSL checks OPENSSL_ROOT_DIR before its default paths.
+      - name: Point llama.cpp at OpenSSL 3 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -241,6 +252,17 @@ jobs:
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
 
+      # llama.cpp's vendored cpp-httplib (llama-cpp-sys-2 0.1.141) only builds
+      # against OpenSSL 3: OpenSSL 4 made X509_get_subject_name return const.
+      # Homebrew's "openssl" became openssl@4 in October 2026, and new macOS
+      # runner images link it, so CMake picked it up and the build broke.
+      # FindOpenSSL checks OPENSSL_ROOT_DIR before its default paths.
+      - name: Point llama.cpp at OpenSSL 3 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -298,6 +320,52 @@ jobs:
           if [ -n "$FEATURES" ]; then args+=(-- --features "$FEATURES"); fi
           cd apps/desktop
           cargo tauri build "${args[@]}"
+
+      # linuxdeploy's GTK plugin bundles Ubuntu 22.04's libwayland-*, but
+      # WebKit's EGL comes from the host's Mesa, which needs the host's
+      # libwayland. On newer distros (seen on Fedora 44, Mesa 26) the mismatch
+      # makes WebKitWebProcess abort with "Could not create default EGL
+      # display: EGL_BAD_PARAMETER" and the window never appears. Every
+      # Wayland-capable distro ships libwayland, so drop the bundled copies,
+      # repack, and re-sign (the updater checks the .sig against the file).
+      - name: Remove bundled libwayland from the AppImage (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          BUNDLE: ${{ matrix.bundle_dir }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/appimage-fix"
+          mkdir -p "$work"
+          curl -sSfL -o "$work/appimagetool" "$APPIMAGETOOL_URL"
+          echo "$APPIMAGETOOL_SHA256  $work/appimagetool" | sha256sum -c -
+          chmod +x "$work/appimagetool"
+
+          appimage=$(ls "$BUNDLE"/appimage/*.AppImage)
+          appimage=$(realpath "$appimage")
+          (cd "$work" && "$appimage" --appimage-extract >/dev/null)
+          removed=$(find "$work/squashfs-root" -name 'libwayland-*.so*' -print -delete)
+          if [ -z "$removed" ]; then
+            echo "::warning::No bundled libwayland found; linuxdeploy may have changed. Skipping repack."
+            exit 0
+          fi
+          echo "Removed:"; echo "$removed"
+
+          rm "$appimage" "$appimage.sig"
+          ARCH=x86_64 "$work/appimagetool" --appimage-extract-and-run --no-appstream \
+            "$work/squashfs-root" "$appimage"
+          cd apps/desktop
+          # Pass the key explicitly: tauri-cli 2.5's `signer sign` reads
+          # TAURI_PRIVATE_KEY, not the TAURI_SIGNING_PRIVATE_KEY the build uses.
+          cargo tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            "$appimage"
+          test -s "$appimage.sig"
+          ls -l "$(dirname "$appimage")"
 
       # Both macOS legs emit the updater bundle as HiveBear.app.tar.gz, and
       # every asset in a release shares one flat namespace, so the second

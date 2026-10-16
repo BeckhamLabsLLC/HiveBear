@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useAccount, useUsage, useApiKeys } from "../hooks/useAccount";
 import {
   UserCircle,
@@ -243,7 +244,7 @@ function AccountDashboard({
     try {
       const url = await invoke<string>("create_checkout", { plan });
       // Open in system browser
-      await invoke("plugin:shell|open", { path: url });
+      await openExternal(url);
     } catch (e) {
       alert(String(e));
     }

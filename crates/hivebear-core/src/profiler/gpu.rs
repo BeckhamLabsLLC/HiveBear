@@ -2,13 +2,27 @@ use crate::types::{ComputeApi, GpuInfo};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn detect_gpus() -> Vec<GpuInfo> {
+    // Driver probing runs third-party code that has panicked on real machines
+    // (wgpu-hal's EGL path unwrapping a missing display, seen on Fedora with
+    // an AppImage). GPU info is optional, so a panic here costs GPU detection,
+    // not the desktop app's startup.
+    std::panic::catch_unwind(detect_gpus_inner).unwrap_or_else(|_| {
+        tracing::warn!("GPU detection panicked; continuing without GPU info");
+        Vec::new()
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn detect_gpus_inner() -> Vec<GpuInfo> {
+    // PRIMARY leaves out OpenGL: GL adapters map to ComputeApi::None anyway,
+    // and initialising EGL is the path that crashed.
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
+        backends: wgpu::Backends::PRIMARY,
         flags: wgpu::InstanceFlags::empty(), // Disable validation layer warnings
         ..Default::default()
     });
 
-    let adapters = instance.enumerate_adapters(wgpu::Backends::all());
+    let adapters = instance.enumerate_adapters(wgpu::Backends::PRIMARY);
 
     adapters
         .into_iter()

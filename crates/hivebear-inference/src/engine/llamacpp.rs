@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
@@ -21,13 +21,33 @@ use super::{InferenceBackend, TokenStream};
 /// Internal state for a loaded llama.cpp model + context.
 struct LoadedModel {
     model: LlamaModel,
-    backend: LlamaBackend,
+    backend: &'static LlamaBackend,
 }
 
 // SAFETY: LlamaModel and LlamaBackend are thread-safe in practice —
 // llama.cpp uses internal locks. We wrap in Arc<Mutex<>> for Rust's Send/Sync.
 unsafe impl Send for LoadedModel {}
 unsafe impl Sync for LoadedModel {}
+
+/// The process-wide llama.cpp backend.
+///
+/// llama-cpp-2 allows a single live `LlamaBackend` per process: a second
+/// `init()` fails with `BackendAlreadyInitialized`, and dropping one frees the
+/// backend for every model still loaded. So it is created once, on first use,
+/// and never dropped. `get_or_init` makes concurrent first loads wait rather
+/// than race.
+fn llama_backend() -> Result<&'static LlamaBackend> {
+    static BACKEND: OnceLock<std::result::Result<LlamaBackend, String>> = OnceLock::new();
+    BACKEND
+        .get_or_init(|| {
+            let backend = LlamaBackend::init().map_err(|e| e.to_string())?;
+            // Redirect llama.cpp logs to tracing
+            llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default());
+            Ok(backend)
+        })
+        .as_ref()
+        .map_err(|e| InferenceError::LoadError(format!("Failed to init llama backend: {e}")))
+}
 
 /// llama.cpp inference backend via the `llama-cpp-2` crate.
 ///
@@ -85,12 +105,7 @@ impl InferenceBackend for LlamaCppBackend {
                 return Err(InferenceError::ModelNotFound(path.display().to_string()));
             }
 
-            let backend = LlamaBackend::init().map_err(|e| {
-                InferenceError::LoadError(format!("Failed to init llama backend: {e}"))
-            })?;
-
-            // Redirect llama.cpp logs to tracing
-            llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default());
+            let backend = llama_backend()?;
 
             // Set up model params
             let mut model_params = LlamaModelParams::default();
@@ -110,7 +125,7 @@ impl InferenceBackend for LlamaCppBackend {
             });
             model_params = model_params.with_n_gpu_layers(gpu_layers);
 
-            let model = LlamaModel::load_from_file(&backend, &path, &model_params)
+            let model = LlamaModel::load_from_file(backend, &path, &model_params)
                 .map_err(|e| InferenceError::LoadError(format!("Failed to load model: {e}")))?;
 
             tracing::info!(
@@ -270,7 +285,7 @@ fn generate_blocking(
 
     let mut ctx = loaded
         .model
-        .new_context(&loaded.backend, ctx_params)
+        .new_context(loaded.backend, ctx_params)
         .map_err(|e| InferenceError::GenerationError(format!("Context creation failed: {e}")))?;
 
     let seed = config.seed.unwrap_or(42) as u32;
@@ -346,7 +361,7 @@ fn stream_blocking(
 
     let mut ctx = loaded
         .model
-        .new_context(&loaded.backend, ctx_params)
+        .new_context(loaded.backend, ctx_params)
         .map_err(|e| InferenceError::GenerationError(format!("Context creation failed: {e}")))?;
 
     let seed = config.seed.unwrap_or(42) as u32;
@@ -449,6 +464,15 @@ mod tests {
         assert!(backend.is_available());
         assert!(backend.supports_grammar());
         assert!(backend.supported_formats().contains(&ModelFormat::Gguf));
+    }
+
+    #[test]
+    fn test_llama_backend_is_shared_across_loads() {
+        // Regression for HIVEBEAR-CLIENT-1: every model load used to call
+        // LlamaBackend::init(), so the second one failed.
+        let first = llama_backend().expect("first init");
+        let second = llama_backend().expect("second init");
+        assert!(std::ptr::eq(first, second));
     }
 
     #[test]
