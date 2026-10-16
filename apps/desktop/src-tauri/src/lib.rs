@@ -11,12 +11,26 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+const IS_MOBILE: bool = cfg!(target_os = "android") || cfg!(target_os = "ios");
+
+/// Mobile starts crash reporting inside setup(), so its guard can't live on
+/// run()'s stack like the desktop one. Held for the process lifetime.
+static MOBILE_SENTRY: std::sync::Mutex<Option<sentry::ClientInitGuard>> =
+    std::sync::Mutex::new(None);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before anything that can fail. Config is read directly rather than through
     // AppState because AppState::init_with_paths is itself one of the things that fails.
-    let mut config = hivebear_core::Config::load();
-    let _sentry = telemetry::init(&mut config);
+    //
+    // Mobile can't read its config yet: the writable directory is only known
+    // once Tauri is up, and reading the default location here would ignore the
+    // user's telemetry opt-out. It initialises in setup() instead.
+    let _sentry = if IS_MOBILE {
+        None
+    } else {
+        telemetry::init(&mut hivebear_core::Config::load())
+    };
 
     // Composed as a registry so the Sentry layer sits beside the formatter.
     // Worth noting what this replaces: stdout at `warn` level, on a binary built
@@ -35,13 +49,23 @@ pub fn run() {
         .setup(|app| {
             // On mobile, use Tauri's app data dir (Android internal storage).
             // On desktop, use the default ProjectDirs-based paths.
-            let paths = if cfg!(target_os = "android") || cfg!(target_os = "ios") {
-                match app.path().app_data_dir() {
-                    Ok(base) => AppState::paths_from_base(base),
+            let paths = if IS_MOBILE {
+                let base = match app.path().app_data_dir() {
+                    Ok(base) => base,
                     Err(e) => {
                         fail_startup(&format!("Could not resolve the app data directory.\n\n{e}"))
                     }
+                };
+                // Config::load/save resolve their own path through
+                // AppPaths::new(). Without this they used the desktop
+                // locations, which are read-only here: every save failed
+                // (including the one join_mesh makes before starting the
+                // node) and every launch came up on defaults.
+                hivebear_core::AppPaths::set_base_override(base.clone());
+                if let Some(guard) = telemetry::init(&mut hivebear_core::Config::load()) {
+                    *MOBILE_SENTRY.lock().unwrap_or_else(|e| e.into_inner()) = Some(guard);
                 }
+                hivebear_core::AppPaths::from_base(base)
             } else {
                 hivebear_core::AppPaths::new()
             };

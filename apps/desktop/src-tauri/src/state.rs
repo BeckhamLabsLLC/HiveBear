@@ -3,7 +3,6 @@ use hivebear_inference::Orchestrator;
 use hivebear_mesh::MeshNode;
 use hivebear_persistence::ChatDatabase;
 use hivebear_registry::Registry;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
@@ -211,19 +210,6 @@ impl AppState {
             info!("Mesh node stopped");
         }
         Ok(())
-    }
-
-    /// Create AppPaths from a base directory (e.g., Tauri's app_data_dir).
-    pub fn paths_from_base(base: PathBuf) -> AppPaths {
-        AppPaths {
-            config_dir: base.join("config"),
-            config_file: base.join("config").join("config.toml"),
-            data_dir: base.join("data"),
-            models_dir: base.join("data").join("models"),
-            db_file: base.join("data").join("hivebear.db"),
-            cache_dir: base.join("cache"),
-            benchmark_cache: base.join("cache").join("benchmark.json"),
-        }
     }
 }
 
