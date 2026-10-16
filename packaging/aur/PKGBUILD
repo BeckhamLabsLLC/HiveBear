@@ -12,8 +12,8 @@ conflicts=('hivebear')
 source_x86_64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${pkgver}/hivebear-x86_64-unknown-linux-gnu.tar.gz")
 source_aarch64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${pkgver}/hivebear-aarch64-unknown-linux-gnu.tar.gz")
 
-sha256sums_x86_64=('f64540abb344c5332a9b44fce38df9c6b710b02c737ff2e982cf83fbfdfbb877')
-sha256sums_aarch64=('4d674643860cf3e7b2868ac7f67c7195642d4c4e31c8406043db8236ed6b7bed')
+sha256sums_x86_64=('73fa8a5f81a88209669998e97d17f01957238d57a59750d15f8fd565ce4b0c3b')
+sha256sums_aarch64=('6aeabd190073850e041cfe6cbbf612c566175e8d385d05175e82319dd924ee91')
 
 package() {
     install -Dm755 hivebear "${pkgdir}/usr/bin/hivebear"

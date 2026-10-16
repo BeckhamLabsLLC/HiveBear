@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v0.1.12/hivebear-x86_64-pc-windows-msvc.zip",
-            "hash": "f664c892d19e05b067239c7141b17fb1b3709d525b86bbd1cc0e77177b0bffa5"
+            "hash": "ed8a51bf5707d8a8c6f4670bb830b0493445ca4932088dde50eaa001882aaac3"
         }
     },
     "bin": "hivebear.exe",
