@@ -1,6 +1,15 @@
 #[cfg(not(target_arch = "wasm32"))]
 use directories::ProjectDirs;
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
+
+/// Base directory that replaces the `ProjectDirs` locations, set once at
+/// startup by hosts where those locations are not writable (Android, iOS).
+/// Every `AppPaths::new()` honours it, so `Config::load`/`save` and the usage
+/// counters land in the same place as the registry and chat database.
+#[cfg(not(target_arch = "wasm32"))]
+static BASE_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(not(target_arch = "wasm32"))]
 const QUALIFIER: &str = "com";
@@ -10,6 +19,7 @@ const ORGANIZATION: &str = "HiveBear";
 const APPLICATION: &str = "hivebear";
 
 /// Paths for HiveBear data, config, and cache.
+#[derive(Debug, Clone)]
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
@@ -21,8 +31,31 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
+    /// Route every later `AppPaths::new()` to `base`. Returns false if an
+    /// override was already set (the first one wins).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_base_override(base: PathBuf) -> bool {
+        BASE_OVERRIDE.set(base).is_ok()
+    }
+
+    /// Lay out the standard subdirectories under one base directory.
+    pub fn from_base(base: PathBuf) -> Self {
+        Self {
+            config_dir: base.join("config"),
+            config_file: base.join("config").join("config.toml"),
+            data_dir: base.join("data"),
+            models_dir: base.join("data").join("models"),
+            db_file: base.join("data").join("hivebear.db"),
+            cache_dir: base.join("cache"),
+            benchmark_cache: base.join("cache").join("benchmark.json"),
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
+        if let Some(base) = BASE_OVERRIDE.get() {
+            return Self::from_base(base.clone());
+        }
         let dirs = ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION);
 
         match dirs {
@@ -46,17 +79,7 @@ impl AppPaths {
                 let home = std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("."));
-                let base = home.join(".hivebear");
-
-                Self {
-                    config_dir: base.join("config"),
-                    config_file: base.join("config").join("config.toml"),
-                    data_dir: base.join("data"),
-                    models_dir: base.join("data").join("models"),
-                    db_file: base.join("data").join("hivebear.db"),
-                    cache_dir: base.join("cache"),
-                    benchmark_cache: base.join("cache").join("benchmark.json"),
-                }
+                Self::from_base(home.join(".hivebear"))
             }
         }
     }
