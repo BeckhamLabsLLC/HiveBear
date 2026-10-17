@@ -1,6 +1,6 @@
 # Maintainer: BeckhamLabs <hello@beckhamlabs.com>
 pkgname=hivebear-bin
-pkgver=0.1.11
+pkgver=0.1.12
 pkgrel=1
 pkgdesc="Run local AI models, with picks matched to your hardware"
 arch=('x86_64' 'aarch64')
@@ -12,8 +12,8 @@ conflicts=('hivebear')
 source_x86_64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${pkgver}/hivebear-x86_64-unknown-linux-gnu.tar.gz")
 source_aarch64=("https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v${pkgver}/hivebear-aarch64-unknown-linux-gnu.tar.gz")
 
-sha256sums_x86_64=('551b4161c11b67e0d17d99fd2c63168faaf1bc2a9e96217d582d9eed12bcc35f')
-sha256sums_aarch64=('86c270a159f5ea6c576f5c357c07a5aa2caef7177de5b3a68f1906e58f1cfe2f')
+sha256sums_x86_64=('73fa8a5f81a88209669998e97d17f01957238d57a59750d15f8fd565ce4b0c3b')
+sha256sums_aarch64=('6aeabd190073850e041cfe6cbbf612c566175e8d385d05175e82319dd924ee91')
 
 package() {
     install -Dm755 hivebear "${pkgdir}/usr/bin/hivebear"

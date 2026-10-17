@@ -1,26 +1,26 @@
 class Hivebear < Formula
   desc "Run local AI models, with picks matched to your hardware"
   homepage "https://hivebear.com"
-  version "0.1.11"
+  version "0.1.12"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-aarch64-apple-darwin.tar.gz"
-      sha256 "e6777d871f37745dd4e7cc78f547d8c12c6276d9b9d9a38db1ea1e565af26ae3"
+      sha256 "506fc7d3e6a8267b6b93fff631613d56c8a52123172162f7a473b62f8286b8fd"
     else
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-x86_64-apple-darwin.tar.gz"
-      sha256 "eaf1aab55ca5481a8df100a31fa9f819ca907b457f9358560342694d2ea2c0e9"
+      sha256 "8c140533d8be55856388e6fe11fc6eeec60d0c4e829128ef9fef83d839386ed6"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "86c270a159f5ea6c576f5c357c07a5aa2caef7177de5b3a68f1906e58f1cfe2f"
+      sha256 "6aeabd190073850e041cfe6cbbf612c566175e8d385d05175e82319dd924ee91"
     else
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "551b4161c11b67e0d17d99fd2c63168faaf1bc2a9e96217d582d9eed12bcc35f"
+      sha256 "73fa8a5f81a88209669998e97d17f01957238d57a59750d15f8fd565ce4b0c3b"
     end
   end
 
