@@ -7,20 +7,20 @@ class Hivebear < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-aarch64-apple-darwin.tar.gz"
-      sha256 "506fc7d3e6a8267b6b93fff631613d56c8a52123172162f7a473b62f8286b8fd"
+      sha256 "6104f3832aa58e8c6c05f2764248c92cff4eb5022be48718c01ac58d5882a22c"
     else
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-x86_64-apple-darwin.tar.gz"
-      sha256 "8c140533d8be55856388e6fe11fc6eeec60d0c4e829128ef9fef83d839386ed6"
+      sha256 "c45463ab45910f15143ebda4b2f5d7f41d28f6cec8a5fd39dbbdd967495ce8f8"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "6aeabd190073850e041cfe6cbbf612c566175e8d385d05175e82319dd924ee91"
+      sha256 "c2dc8d76cf1e16cf5fd3c27c68086fef8758ebd6a6482595d35e756b8af3b4d4"
     else
       url "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v#{version}/hivebear-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "73fa8a5f81a88209669998e97d17f01957238d57a59750d15f8fd565ce4b0c3b"
+      sha256 "1c2edac569dd676ac9ea4bb311e192bf1c7ceefaef6e04367f6a6a94223a8b91"
     end
   end
 
