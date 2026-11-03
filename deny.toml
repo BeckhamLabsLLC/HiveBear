@@ -19,18 +19,21 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 #
 # Next review: 2026-11-11. Re-verify each ID against the DB — do not just move the date.
 ignore = [
+    # ── zip extraction advisories, on copies we cannot upgrade yet ──
+    # zip 1.1 (candle-core 0.8) only reads .npz members by name and never calls
+    # extract(). zip 4.6 (tauri-plugin-updater 2.10) only extracts the Windows
+    # update archive after verify_signature() against our minisign pubkey, so
+    # the archive is never attacker-controlled. self_update uses zip 9 (fixed).
+    # Remove when candle >= 0.11 and tauri >= 2.12 / updater >= 2.14 land.
+    "RUSTSEC-2026-0367",  # zip: SUID/SGID bits preserved on extract.
+    "RUSTSEC-2026-0368",  # zip: extract() symlink targets escape destination.
+    "RUSTSEC-2026-0369",  # zip: permissions applied through symlinks.
+    "RUSTSEC-2026-0429",  # zip: extract() aborts on huge symlink entry.
+
     # ── Tauri v2 Linux/macOS build chain: unmaintained, compile-time only ──
     "RUSTSEC-2024-0370",  # proc-macro-error: unmaintained proc-macro helper.
-    "RUSTSEC-2024-0411",  # gtk-rs GTK3 bindings: unmaintained (Tauri Linux webview).
-    "RUSTSEC-2024-0412",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0413",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0414",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0415",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0416",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0417",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0418",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0419",  # gtk-rs GTK3 bindings: unmaintained.
-    "RUSTSEC-2024-0420",  # gtk-rs GTK3 bindings: unmaintained.
+    # (The gtk-rs GTK3 entries 2024-0411..0420 were dropped 2026-11: cargo deny
+    # reports them as no longer matched.)
     "RUSTSEC-2024-0436",  # paste: unmaintained macro helper, reached via wgpu/metal.
 
     # ── Unmaintained leaf utilities, no known defect ──

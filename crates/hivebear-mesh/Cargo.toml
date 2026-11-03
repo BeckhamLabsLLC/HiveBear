@@ -43,7 +43,7 @@ tracing = "0.1"
 
 # Compression
 lz4_flex = "0.11"
-zstd = "0.13"
+zstd = "0.14"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
