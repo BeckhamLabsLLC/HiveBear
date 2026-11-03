@@ -7,6 +7,16 @@ import { reportError } from "../lib/telemetry";
 
 type Stage = "available" | "downloading" | "ready" | "error";
 
+/**
+ * The Tauri updater only supports Linux, macOS and Windows. On the Android
+ * (and future iOS) builds `check()` rejects with "Unsupported OS", which was
+ * reported to Sentry on every launch (HIVEBEAR-CLIENT-3). Mobile builds update
+ * through their store, so skip the check there.
+ */
+function updaterSupported(): boolean {
+  return !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 export default function UpdateNotification() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [stage, setStage] = useState<Stage>("available");
@@ -14,6 +24,7 @@ export default function UpdateNotification() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
+    if (!updaterSupported()) return;
     let cancelled = false;
 
     const checkForUpdate = async () => {
