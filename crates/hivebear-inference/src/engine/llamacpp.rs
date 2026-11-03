@@ -299,7 +299,9 @@ fn generate_blocking(
     let mut sampler = build_sampler(&loaded.model, req, seed);
 
     let max_new = generation_budget(tokens.len(), n_ctx, req.max_tokens)?;
-    let mut batch = decode_prompt(&mut ctx, &tokens, config.batch_size)?;
+    decode_prompt(&mut ctx, &tokens, config.batch_size)?;
+    // One token per decode from here on.
+    let mut batch = LlamaBatch::new(1, 1);
     let mut decoder = encoding_rs::UTF_8.new_decoder();
 
     let mut output = String::new();
@@ -373,7 +375,9 @@ fn stream_blocking(
     let mut sampler = build_sampler(&loaded.model, req, seed);
 
     let max_new = generation_budget(tokens.len(), n_ctx, req.max_tokens)?;
-    let mut batch = decode_prompt(&mut ctx, &tokens, config.batch_size)?;
+    decode_prompt(&mut ctx, &tokens, config.batch_size)?;
+    // One token per decode from here on.
+    let mut batch = LlamaBatch::new(1, 1);
     let mut decoder = encoding_rs::UTF_8.new_decoder();
 
     let eos = loaded.model.token_eos();
@@ -464,12 +468,11 @@ fn generation_budget(prompt_tokens: usize, n_ctx: u32, max_tokens: u32) -> Resul
 /// with nothing reaching Sentry. Asking for logits on every prompt token also
 /// allocated n_tokens x n_vocab floats for no reason.
 ///
-/// Returns the batch for reuse by the token-by-token loop.
 fn decode_prompt(
     ctx: &mut llama_cpp_2::context::LlamaContext,
     tokens: &[llama_cpp_2::token::LlamaToken],
     n_batch: u32,
-) -> Result<LlamaBatch> {
+) -> Result<()> {
     let chunk = (n_batch as usize).max(1);
     let mut batch = LlamaBatch::new(chunk, 1);
     let last = tokens.len().saturating_sub(1);
@@ -484,7 +487,7 @@ fn decode_prompt(
         ctx.decode(&mut batch)
             .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
     }
-    Ok(batch)
+    Ok(())
 }
 
 /// Turn llama.cpp's opaque load failure into something a user can act on.
