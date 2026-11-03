@@ -3028,6 +3028,15 @@ async fn cmd_contribute(port: u16, model_override: Option<String>, coordinator: 
 }
 
 async fn cmd_update(check_only: bool) {
+    // self_update's GitHub client is blocking (reqwest::blocking), which panics
+    // when driven from inside the tokio runtime, so run it on a blocking thread.
+    if let Err(e) = tokio::task::spawn_blocking(move || cmd_update_blocking(check_only)).await {
+        eprintln!("{} Update task failed: {}", "Error:".red().bold(), e);
+        std::process::exit(1);
+    }
+}
+
+fn cmd_update_blocking(check_only: bool) {
     use self_update::backends::github::Update;
 
     let current_version = env!("CARGO_PKG_VERSION");
@@ -3064,7 +3073,7 @@ async fn cmd_update(check_only: bool) {
         }
     };
 
-    let latest = match updater.get_latest_release() {
+    let releases = match updater.get_latest_release() {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
@@ -3076,7 +3085,11 @@ async fn cmd_update(check_only: bool) {
         }
     };
 
-    let latest_version = latest.version.trim_start_matches('v');
+    let Some(latest) = releases.latest() else {
+        eprintln!("{} No published releases found.", "Error:".red().bold());
+        std::process::exit(1);
+    };
+    let latest_version = latest.version().trim_start_matches('v').to_string();
 
     if latest_version == current_version {
         println!(
