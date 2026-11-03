@@ -99,17 +99,31 @@ export interface Config {
     /** Anonymous usage counts (first launch, first chat, benchmark shared). */
     usage_events: boolean;
   };
-  // Mesh config (flattened for form state)
-  mesh_enabled?: boolean;
-  mesh_port?: number;
-  mesh_coordination_server?: string;
-  mesh_tier?: string;
-  mesh_max_contribution?: number;
-  mesh_verification_rate?: number;
-  // Cloud provider config
-  cloud_api_keys?: Record<string, string>;
-  cloud_fallback?: boolean;
-  cloud_default_provider?: string;
+  // Nested exactly as the Rust `Config` serializes them. These used to be
+  // flattened (`mesh_enabled`, `cloud_fallback`, ...), which serde silently
+  // dropped on save, so mesh and cloud settings never persisted. The index
+  // signatures keep fields the UI doesn't edit intact across the round trip.
+  mesh: MeshConfig;
+  cloud: CloudConfig;
+}
+
+export interface MeshConfig {
+  enabled: boolean;
+  port: number;
+  coordination_server: string;
+  tier: string;
+  max_contribution_percent: number;
+  min_reputation: number;
+  verification_rate: number;
+  [key: string]: unknown;
+}
+
+export interface CloudConfig {
+  /** Legacy plaintext keys; live keys are stored in the OS keychain. */
+  api_keys: Record<string, string>;
+  cloud_fallback: boolean;
+  default_provider: string | null;
+  [key: string]: unknown;
 }
 
 /** Static definition of a supported cloud provider. */

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConfig, useStorageReport } from "../hooks/useConfig";
 import { formatBytes } from "../types";
 import type { Config } from "../types";
+import { deleteCloudApiKey, getCloudApiKeys, setCloudApiKey } from "../lib/invoke";
 import { Card, Button, Toggle, Surface, Badge } from "../components/ui";
 import { Save, Loader, Eye, EyeOff, Cloud, Check, ChevronDown, ExternalLink } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -17,15 +18,45 @@ export default function Settings() {
   const [activeSection, setActiveSection] = useState<SectionId>("Inference");
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
 
+  // Cloud API keys live in the OS keychain, not in config.toml, so they are
+  // loaded and saved through their own commands.
+  const [savedKeys, setSavedKeys] = useState<Record<string, string>>({});
+  const [keys, setKeys] = useState<Record<string, string>>({});
+
   useEffect(() => { if (config) setForm({ ...config }); }, [config]);
+  useEffect(() => {
+    getCloudApiKeys()
+      .then((k) => { setSavedKeys(k); setKeys(k); })
+      .catch(() => { /* the invoke wrapper already surfaced it */ });
+  }, []);
 
   const isDirty = useMemo(() => {
     if (!config || !form) return false;
-    return JSON.stringify(config) !== JSON.stringify(form);
-  }, [config, form]);
+    return (
+      JSON.stringify(config) !== JSON.stringify(form) ||
+      JSON.stringify(savedKeys) !== JSON.stringify(keys)
+    );
+  }, [config, form, savedKeys, keys]);
 
-  const handleSave = useCallback(() => { if (form) save(form); }, [form, save]);
-  const handleDiscard = useCallback(() => { if (config) setForm({ ...config }); }, [config]);
+  const handleSave = useCallback(async () => {
+    if (!form) return;
+    await save(form);
+    try {
+      for (const [provider, key] of Object.entries(keys)) {
+        if (savedKeys[provider] !== key) await setCloudApiKey(provider, key);
+      }
+      for (const provider of Object.keys(savedKeys)) {
+        if (!(provider in keys)) await deleteCloudApiKey(provider);
+      }
+      setSavedKeys(keys);
+    } catch {
+      // Already shown as a toast by the invoke wrapper; keep the form dirty.
+    }
+  }, [form, save, keys, savedKeys]);
+  const handleDiscard = useCallback(() => {
+    if (config) setForm({ ...config });
+    setKeys(savedKeys);
+  }, [config, savedKeys]);
 
   const scrollToSection = useCallback((id: SectionId) => {
     setActiveSection(id);
@@ -133,35 +164,35 @@ export default function Settings() {
           {/* Mesh */}
           <SettingsSection id="Mesh" refs={sectionRefs}>
             <Field label="Enable Mesh" hint="Join P2P network to share distributed compute">
-              <Toggle checked={form.mesh_enabled ?? false} onChange={(v) => setForm({ ...form, mesh_enabled: v })} />
+              <Toggle checked={form.mesh.enabled} onChange={(v) => setForm({ ...form, mesh: { ...form.mesh, enabled: v } })} />
             </Field>
             <Field label="Port" hint="QUIC transport port (1024-65535)">
-              <input type="number" min={1024} max={65535} value={form.mesh_port ?? 7878}
-                onChange={(e) => setForm({ ...form, mesh_port: Number(e.target.value) })}
+              <input type="number" min={1024} max={65535} value={form.mesh.port}
+                onChange={(e) => setForm({ ...form, mesh: { ...form.mesh, port: Number(e.target.value) } })}
                 className="w-32 rounded-[var(--radius-md)] border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-paw-500 focus:ring-2 focus:ring-paw-500/20" />
             </Field>
             <Field label="Coordination Server">
-              <input type="text" value={form.mesh_coordination_server ?? ""}
-                onChange={(e) => setForm({ ...form, mesh_coordination_server: e.target.value })}
+              <input type="text" value={form.mesh.coordination_server}
+                onChange={(e) => setForm({ ...form, mesh: { ...form.mesh, coordination_server: e.target.value } })}
                 className="w-full max-w-md rounded-[var(--radius-md)] border border-border bg-surface px-3 py-2 font-mono text-sm outline-none focus:border-paw-500 focus:ring-2 focus:ring-paw-500/20" />
             </Field>
             <Field label="Max Contribution" hint="Resources to share (0-100%)">
               <div className="flex items-center gap-3">
-                <input type="range" min={0} max={100} value={(form.mesh_max_contribution ?? 0.8) * 100}
-                  onChange={(e) => setForm({ ...form, mesh_max_contribution: Number(e.target.value) / 100 })}
+                <input type="range" min={0} max={100} value={form.mesh.max_contribution_percent * 100}
+                  onChange={(e) => setForm({ ...form, mesh: { ...form.mesh, max_contribution_percent: Number(e.target.value) / 100 } })}
                   className="w-32" />
                 <span className="w-10 text-right font-mono text-xs text-text-muted">
-                  {((form.mesh_max_contribution ?? 0.8) * 100).toFixed(0)}%
+                  {(form.mesh.max_contribution_percent * 100).toFixed(0)}%
                 </span>
               </div>
             </Field>
             <Field label="Verification Rate" hint="Fraction of tokens to spot-check">
               <div className="flex items-center gap-3">
-                <input type="range" min={0} max={100} value={(form.mesh_verification_rate ?? 0.05) * 100}
-                  onChange={(e) => setForm({ ...form, mesh_verification_rate: Number(e.target.value) / 100 })}
+                <input type="range" min={0} max={100} value={form.mesh.verification_rate * 100}
+                  onChange={(e) => setForm({ ...form, mesh: { ...form.mesh, verification_rate: Number(e.target.value) / 100 } })}
                   className="w-32" />
                 <span className="w-10 text-right font-mono text-xs text-text-muted">
-                  {((form.mesh_verification_rate ?? 0.05) * 100).toFixed(0)}%
+                  {(form.mesh.verification_rate * 100).toFixed(0)}%
                 </span>
               </div>
             </Field>
@@ -170,11 +201,11 @@ export default function Settings() {
           {/* Cloud */}
           <SettingsSection id="Cloud" refs={sectionRefs}>
             <CloudProviderKeys
-              apiKeys={form.cloud_api_keys ?? {}}
-              onChange={(keys) => setForm({ ...form, cloud_api_keys: keys })}
+              apiKeys={keys}
+              onChange={setKeys}
             />
             <Field label="Cloud Fallback" hint="Fall back to cloud when local inference fails">
-              <Toggle checked={form.cloud_fallback ?? false} onChange={(v) => setForm({ ...form, cloud_fallback: v })} />
+              <Toggle checked={form.cloud.cloud_fallback} onChange={(v) => setForm({ ...form, cloud: { ...form.cloud, cloud_fallback: v } })} />
             </Field>
           </SettingsSection>
 

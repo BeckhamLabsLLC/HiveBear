@@ -59,7 +59,23 @@ function friendlyMessage(_command: string, code: string | null, message: string,
 
 function normalize(command: string, err: unknown): InvokeError {
   if (err instanceof InvokeError) return err;
-  if (typeof err === "string") return new InvokeError(command, err, null, err);
+  if (typeof err === "string") {
+    // Rust's `From<CommandError> for String` serializes `{code, message}` to
+    // JSON, because Tauri commands return `Result<T, String>`. Unpacked here,
+    // or every toast showed the raw JSON and `code` was always null.
+    if (err.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(err) as { code?: unknown; message?: unknown };
+        if (typeof parsed.message === "string") {
+          const code = typeof parsed.code === "string" ? parsed.code : null;
+          return new InvokeError(command, parsed.message, code, err);
+        }
+      } catch {
+        // Not our JSON; fall through to the plain string.
+      }
+    }
+    return new InvokeError(command, err, null, err);
+  }
   if (err instanceof Error) return new InvokeError(command, err.message, null, err);
   if (err && typeof err === "object") {
     const anyErr = err as { code?: unknown; message?: unknown };
@@ -86,6 +102,15 @@ function normalize(command: string, err: unknown): InvokeError {
  */
 function isIpcLayerFailure(raw: unknown): boolean {
   return raw instanceof Error;
+}
+
+/**
+ * Human-readable message for an error thrown by a raw `invoke()` call (or any
+ * other rejection). Use instead of `String(e)`, which showed the backend's
+ * `{"code":…,"message":…}` JSON verbatim.
+ */
+export function errorMessage(err: unknown): string {
+  return normalize("", err).message;
 }
 
 function invoke<T>(command: string, args?: Record<string, unknown>, opts?: InvokeOptions): Promise<T> {
