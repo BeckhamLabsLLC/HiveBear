@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { errorMessage } from "../lib/invoke";
 import type { AccountInfo, AuthResult, UsageSummary, ApiKeyInfo, NewApiKey } from "../types";
 
 export function useAccount() {
@@ -30,7 +31,7 @@ export function useAccount() {
       await invoke<AuthResult>("login", { email, password });
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       throw e;
     }
   }, [refresh]);
@@ -41,7 +42,7 @@ export function useAccount() {
       await invoke<AuthResult>("register", { email, password, displayName });
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       throw e;
     }
   }, [refresh]);
@@ -52,7 +53,7 @@ export function useAccount() {
       await invoke<AuthResult>("activate_device");
       await refresh();
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       throw e;
     }
   }, [refresh]);

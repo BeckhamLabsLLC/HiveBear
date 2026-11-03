@@ -87,7 +87,13 @@ async function saveOnboardingChoices(usageEvents: boolean) {
   try {
     const config = await getConfig();
     if (config.telemetry?.usage_events !== usageEvents) {
-      await saveConfig({ ...config, telemetry: { ...config.telemetry, usage_events: usageEvents } });
+      // notice_shown is set here too: this runs concurrently with
+      // acknowledge_telemetry_notice, and a config read before that landed
+      // would otherwise write `notice_shown: false` straight back.
+      await saveConfig({
+        ...config,
+        telemetry: { ...config.telemetry, usage_events: usageEvents, notice_shown: true },
+      });
     }
   } catch { /* already toasted by invoke(); the default stays in place */ }
   void invoke("record_usage_event", { event: "first_launch" }).catch(() => {});

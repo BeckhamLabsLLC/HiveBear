@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { errorMessage } from "../lib/invoke";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useAccount, useUsage, useApiKeys } from "../hooks/useAccount";
 import {
@@ -246,7 +247,7 @@ function AccountDashboard({
       // Open in system browser
       await openExternal(url);
     } catch (e) {
-      alert(String(e));
+      alert(errorMessage(e));
     }
   };
 

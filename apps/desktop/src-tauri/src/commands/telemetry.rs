@@ -48,7 +48,20 @@ pub fn telemetry_status() -> TelemetryStatus {
 /// a GUI app with no console — so the notice lives in the UI and this is how the
 /// UI says it has done its job.
 #[tauri::command]
-pub fn acknowledge_telemetry_notice() -> Result<(), String> {
+pub fn acknowledge_telemetry_notice(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    // Update the in-memory config as well as the file. Writing only the file
+    // left AppState.config with `notice_shown = false`, and the next
+    // `save_config` (the welcome screen's own save, or any Settings save)
+    // wrote that stale value back, so the notice was owed again every launch.
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| String::from("Config lock poisoned"))?;
+        config.telemetry.notice_shown = true;
+        return config.save().map_err(|e| e.to_string());
+    }
     let mut config = Config::load();
     config.telemetry.notice_shown = true;
     config.save().map_err(|e| e.to_string())
