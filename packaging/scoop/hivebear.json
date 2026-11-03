@@ -1,11 +1,11 @@
 {
-    "version": "0.1.12",
+    "version": "0.1.13",
     "description": "Run local AI models, with picks matched to your hardware",
     "homepage": "https://hivebear.com",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v0.1.12/hivebear-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/BeckhamLabsLLC/HiveBear/releases/download/v0.1.13/hivebear-x86_64-pc-windows-msvc.zip",
             "hash": "ed8a51bf5707d8a8c6f4670bb830b0493445ca4932088dde50eaa001882aaac3"
         }
     },

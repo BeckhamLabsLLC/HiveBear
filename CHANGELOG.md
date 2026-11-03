@@ -5,6 +5,31 @@ All notable changes to HiveBear are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-11-03
+
+Long prompts no longer crash the local server, and desktop settings stick.
+
+### Fixed
+- `hivebear serve` (and the desktop app) crashed on any prompt longer than
+  512 tokens, which is most requests from coding assistants such as Cursor or
+  Continue. Long prompts now work.
+- The context length you load a model with is now used when generating; it
+  was ignored. Prompts too long for the context window get a clear error.
+- Emoji and other characters split across tokens no longer disappear from
+  replies.
+- Models that this version can't load now say which architecture they use
+  (for example `gemma4`) instead of "null result from llama cpp".
+- Desktop: mesh settings and cloud API keys are saved. They looked saved but
+  were lost on restart.
+- Desktop: error messages are readable instead of raw JSON.
+- Desktop: the crash-reporting notice no longer reappears at every launch.
+- Android: no more update-check errors (the desktop updater doesn't apply).
+- `hivebear update` no longer panics.
+
+### Security
+- Updated rustls-webpki, webpki-roots, tokio and zstd for new RustSec
+  advisories; the self-updater moves to self_update 1.3.
+
 ## [0.1.12] - 2026-10-16
 
 Settings save on Android again, and joining the hive works there.
