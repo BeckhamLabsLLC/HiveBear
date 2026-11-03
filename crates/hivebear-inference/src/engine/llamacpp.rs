@@ -22,6 +22,9 @@ use super::{InferenceBackend, TokenStream};
 struct LoadedModel {
     model: LlamaModel,
     backend: &'static LlamaBackend,
+    /// The config the model was loaded with. Generation used to rebuild
+    /// `LoadConfig::default()`, silently dropping the caller's context length.
+    config: LoadConfig,
 }
 
 // SAFETY: LlamaModel and LlamaBackend are thread-safe in practice —
@@ -126,7 +129,7 @@ impl InferenceBackend for LlamaCppBackend {
             model_params = model_params.with_n_gpu_layers(gpu_layers);
 
             let model = LlamaModel::load_from_file(backend, &path, &model_params)
-                .map_err(|e| InferenceError::LoadError(format!("Failed to load model: {e}")))?;
+                .map_err(|e| load_error(&path, &e.to_string()))?;
 
             tracing::info!(
                 path = %path.display(),
@@ -135,7 +138,11 @@ impl InferenceBackend for LlamaCppBackend {
             );
 
             let handle = ModelHandle::new(path, InferenceEngine::LlamaCpp);
-            let loaded = Arc::new(LoadedModel { model, backend });
+            let loaded = Arc::new(LoadedModel {
+                model,
+                backend,
+                config,
+            });
 
             loaded_models
                 .lock()
@@ -154,11 +161,10 @@ impl InferenceBackend for LlamaCppBackend {
         req: &GenerateRequest,
     ) -> Result<GenerateResponse> {
         let loaded = self.get_loaded(handle.id)?;
-        let config = LoadConfig::default(); // TODO: store per-handle config
         let req = req.clone();
 
         tokio::task::spawn_blocking(move || {
-            let text = generate_blocking(&loaded, &config, &req)?;
+            let text = generate_blocking(&loaded, &loaded.config, &req)?;
             Ok(GenerateResponse::Text(text))
         })
         .await
@@ -181,8 +187,7 @@ impl InferenceBackend for LlamaCppBackend {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::task::spawn_blocking(move || {
-            let config = LoadConfig::default();
-            if let Err(e) = stream_blocking(&loaded, &config, &req, &tx) {
+            if let Err(e) = stream_blocking(&loaded, &loaded.config, &req, &tx) {
                 let _ = tx.blocking_send(Err(e));
             }
         });
@@ -293,21 +298,18 @@ fn generate_blocking(
     let seed = config.seed.unwrap_or(42) as u32;
     let mut sampler = build_sampler(&loaded.model, req, seed);
 
-    // Process prompt tokens
-    let mut batch = LlamaBatch::new(tokens.len(), 1);
-    batch
-        .add_sequence(&tokens, 0, true)
-        .map_err(|e| InferenceError::GenerationError(format!("Batch add failed: {e}")))?;
-
-    ctx.decode(&mut batch)
-        .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
+    let max_new = generation_budget(tokens.len(), n_ctx, req.max_tokens)?;
+    decode_prompt(&mut ctx, &tokens, config.batch_size)?;
+    // One token per decode from here on.
+    let mut batch = LlamaBatch::new(1, 1);
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
 
     let mut output = String::new();
     let eos = loaded.model.token_eos();
 
     // n_decoded is the absolute context position: prompt length plus however
     // many tokens have been emitted so far.
-    for n_decoded in (tokens.len() as i32..).take(req.max_tokens as usize) {
+    for n_decoded in (tokens.len() as i32..).take(max_new) {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
 
@@ -315,7 +317,7 @@ fn generate_blocking(
             break;
         }
 
-        let piece = token_to_string(&loaded.model, token);
+        let piece = token_to_string(&loaded.model, token, &mut decoder);
         output.push_str(&piece);
 
         // Check stop sequences
@@ -372,19 +374,16 @@ fn stream_blocking(
     let seed = config.seed.unwrap_or(42) as u32;
     let mut sampler = build_sampler(&loaded.model, req, seed);
 
-    // Process prompt
-    let mut batch = LlamaBatch::new(tokens.len(), 1);
-    batch
-        .add_sequence(&tokens, 0, true)
-        .map_err(|e| InferenceError::GenerationError(format!("Batch add failed: {e}")))?;
-
-    ctx.decode(&mut batch)
-        .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
+    let max_new = generation_budget(tokens.len(), n_ctx, req.max_tokens)?;
+    decode_prompt(&mut ctx, &tokens, config.batch_size)?;
+    // One token per decode from here on.
+    let mut batch = LlamaBatch::new(1, 1);
+    let mut decoder = encoding_rs::UTF_8.new_decoder();
 
     let eos = loaded.model.token_eos();
     let mut accumulated = String::new();
 
-    for n_decoded in (tokens.len() as i32..).take(req.max_tokens as usize) {
+    for n_decoded in (tokens.len() as i32..).take(max_new) {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
 
@@ -392,7 +391,7 @@ fn stream_blocking(
             break;
         }
 
-        let piece = token_to_string(&loaded.model, token);
+        let piece = token_to_string(&loaded.model, token, &mut decoder);
 
         accumulated.push_str(&piece);
 
@@ -431,11 +430,83 @@ fn stream_blocking(
 }
 
 /// Convert a token to a string using the non-deprecated `token_to_piece` API.
-fn token_to_string(model: &LlamaModel, token: llama_cpp_2::token::LlamaToken) -> String {
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
+///
+/// The decoder must live for the whole generation: an emoji or CJK character
+/// is often split across two tokens, and a fresh decoder per token dropped the
+/// incomplete bytes, so those characters vanished from the output.
+fn token_to_string(
+    model: &LlamaModel,
+    token: llama_cpp_2::token::LlamaToken,
+    decoder: &mut encoding_rs::Decoder,
+) -> String {
     model
-        .token_to_piece(token, &mut decoder, true, None)
+        .token_to_piece(token, decoder, true, None)
         .unwrap_or_default()
+}
+
+/// How many new tokens fit after the prompt. llama.cpp fails (or with some
+/// builds aborts) once the KV cache is full, and that failure reached API
+/// clients as a normal "stop", so refuse prompts that leave no room and cap
+/// generation at the context window.
+fn generation_budget(prompt_tokens: usize, n_ctx: u32, max_tokens: u32) -> Result<usize> {
+    let n_ctx = n_ctx as usize;
+    if prompt_tokens >= n_ctx {
+        return Err(InferenceError::GenerationError(format!(
+            "Prompt is {prompt_tokens} tokens but the context window is {n_ctx}. \
+             Shorten the conversation or load the model with a larger context length."
+        )));
+    }
+    Ok((max_tokens as usize).min(n_ctx - prompt_tokens))
+}
+
+/// Feed the prompt in chunks of at most `n_batch` tokens, requesting logits
+/// only for the very last token.
+///
+/// llama.cpp asserts `n_tokens <= n_batch` inside `llama_decode`. That is a C
+/// `abort()`: one decode call with a prompt longer than the batch size (512 by
+/// default, i.e. any real coding-assistant request) killed the whole process,
+/// with nothing reaching Sentry. Asking for logits on every prompt token also
+/// allocated n_tokens x n_vocab floats for no reason.
+///
+fn decode_prompt(
+    ctx: &mut llama_cpp_2::context::LlamaContext,
+    tokens: &[llama_cpp_2::token::LlamaToken],
+    n_batch: u32,
+) -> Result<()> {
+    let chunk = (n_batch as usize).max(1);
+    let mut batch = LlamaBatch::new(chunk, 1);
+    let last = tokens.len().saturating_sub(1);
+    for (chunk_idx, piece) in tokens.chunks(chunk).enumerate() {
+        batch.clear();
+        for (i, &tok) in piece.iter().enumerate() {
+            let pos = chunk_idx * chunk + i;
+            batch
+                .add(tok, pos as i32, &[0], pos == last)
+                .map_err(|e| InferenceError::GenerationError(format!("Batch add failed: {e}")))?;
+        }
+        ctx.decode(&mut batch)
+            .map_err(|e| InferenceError::GenerationError(format!("Prompt decode failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Turn llama.cpp's opaque load failure into something a user can act on.
+///
+/// `load_from_file` only reports "null result from llama cpp"; the real reason
+/// goes to llama.cpp's log. The most common cause in the field
+/// (HIVEBEAR-CLIENT-4) is a model architecture newer than the bundled
+/// llama.cpp, which the GGUF header tells us directly.
+fn load_error(path: &Path, raw: &str) -> InferenceError {
+    match hivebear_core::gguf::read_metadata(path) {
+        Ok(meta) if !meta.architecture.is_empty() => InferenceError::LoadError(format!(
+            "Could not load this model (architecture '{}'). It may be newer than this \
+             version of HiveBear supports; update HiveBear or choose another model. ({raw})",
+            meta.architecture
+        )),
+        Ok(_) | Err(_) => InferenceError::LoadError(format!(
+            "Failed to load model: the file may be incomplete, corrupted, or not a GGUF model. ({raw})"
+        )),
+    }
 }
 
 fn num_cpus() -> usize {
@@ -456,6 +527,15 @@ mod tests {
         assert!(backend.is_available());
         assert!(backend.supports_grammar());
         assert!(backend.supported_formats().contains(&ModelFormat::Gguf));
+    }
+
+    #[test]
+    fn generation_budget_caps_at_context_window() {
+        assert_eq!(generation_budget(100, 4096, 2048).unwrap(), 2048);
+        // 3,000-token prompt in a 4,096 window leaves 1,096, not 2,048.
+        assert_eq!(generation_budget(3000, 4096, 2048).unwrap(), 1096);
+        assert!(generation_budget(4096, 4096, 10).is_err());
+        assert!(generation_budget(5000, 4096, 10).is_err());
     }
 
     #[test]
